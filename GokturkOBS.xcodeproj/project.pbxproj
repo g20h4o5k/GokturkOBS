@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		870729BD30769BA100CB71A2 /* foodList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870729BC30769BA100CB71A2 /* foodList.swift */; };
+		870729BF30769F9D00CB71A2 /* SidebarProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870729BE30769F9D00CB71A2 /* SidebarProfileView.swift */; };
+		870729C130769FC900CB71A2 /* StudentProfileHTMLParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870729C030769FC900CB71A2 /* StudentProfileHTMLParser.swift */; };
 		877270F730753F28001C9D63 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 877270F530753F28001C9D63 /* README.md */; };
 		877270F830753F28001C9D63 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 877270EE30753F28001C9D63 /* Assets.xcassets */; };
 		877270F930753F28001C9D63 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = 877270F130753F28001C9D63 /* LICENSE */; };
@@ -15,10 +18,14 @@
 		877270FC30753F28001C9D63 /* exams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 877270EF30753F28001C9D63 /* exams.swift */; };
 		877270FD30753F28001C9D63 /* login.swift in Sources */ = {isa = PBXBuildFile; fileRef = 877270F230753F28001C9D63 /* login.swift */; };
 		877270FE30753F28001C9D63 /* homework.swift in Sources */ = {isa = PBXBuildFile; fileRef = 877270F030753F28001C9D63 /* homework.swift */; };
+		877270FF30753F28001C9D63 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8772710030753F28001C9D63 /* KeychainService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* GokturkOBS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GokturkOBS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		870729BC30769BA100CB71A2 /* foodList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = foodList.swift; sourceTree = "<group>"; };
+		870729BE30769F9D00CB71A2 /* SidebarProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProfileView.swift; sourceTree = "<group>"; };
+		870729C030769FC900CB71A2 /* StudentProfileHTMLParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentProfileHTMLParser.swift; sourceTree = "<group>"; };
 		877270ED30753F28001C9D63 /* anadosya.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = anadosya.swift; sourceTree = "<group>"; };
 		877270EE30753F28001C9D63 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		877270EF30753F28001C9D63 /* exams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = exams.swift; sourceTree = "<group>"; };
@@ -28,6 +35,7 @@
 		877270F330753F28001C9D63 /* lSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = lSchedule.swift; sourceTree = "<group>"; };
 		877270F430753F28001C9D63 /* MyApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "MyApp-Bridging-Header.h"; sourceTree = "<group>"; };
 		877270F530753F28001C9D63 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		8772710030753F28001C9D63 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,7 +66,6 @@
 		877270F630753F28001C9D63 /* GokturkOBS */ = {
 			isa = PBXGroup;
 			children = (
-				877270ED30753F28001C9D63 /* anadosya.swift */,
 				877270EE30753F28001C9D63 /* Assets.xcassets */,
 				877270EF30753F28001C9D63 /* exams.swift */,
 				877270F030753F28001C9D63 /* homework.swift */,
@@ -67,6 +74,11 @@
 				877270F330753F28001C9D63 /* lSchedule.swift */,
 				877270F430753F28001C9D63 /* MyApp-Bridging-Header.h */,
 				877270F530753F28001C9D63 /* README.md */,
+				8772710030753F28001C9D63 /* KeychainService.swift */,
+				870729BC30769BA100CB71A2 /* foodList.swift */,
+				870729BE30769F9D00CB71A2 /* SidebarProfileView.swift */,
+				870729C030769FC900CB71A2 /* StudentProfileHTMLParser.swift */,
+				877270ED30753F28001C9D63 /* anadosya.swift */,
 			);
 			path = GokturkOBS;
 			sourceTree = "<group>";
@@ -139,10 +151,14 @@
 			isa = PBXSourcesBuildPhase;
 			files = (
 				877270FA30753F28001C9D63 /* anadosya.swift in Sources */,
+				870729BF30769F9D00CB71A2 /* SidebarProfileView.swift in Sources */,
 				877270FB30753F28001C9D63 /* lSchedule.swift in Sources */,
+				870729BD30769BA100CB71A2 /* foodList.swift in Sources */,
 				877270FC30753F28001C9D63 /* exams.swift in Sources */,
+				870729C130769FC900CB71A2 /* StudentProfileHTMLParser.swift in Sources */,
 				877270FD30753F28001C9D63 /* login.swift in Sources */,
 				877270FE30753F28001C9D63 /* homework.swift in Sources */,
+				877270FF30753F28001C9D63 /* KeychainService.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -287,6 +303,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 2937L6R7J4;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
@@ -320,13 +337,14 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Debug;
 		};
@@ -337,6 +355,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 2937L6R7J4;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
@@ -370,13 +389,14 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Release;
 		};

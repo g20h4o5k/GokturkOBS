@@ -5,6 +5,8 @@ import Foundation
 struct StudentProfile: Codable {
     let stuNo: String
     let classId: String
+    let name: String
+    let photoURL: URL?
 }
 
 struct ExamDashboard: Codable {

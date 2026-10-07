@@ -1,5 +1,7 @@
 import SwiftUI
 import Foundation
+import AppKit
+import Security
 
 struct LoginResponse: Decodable {
     let success: Bool
@@ -14,7 +16,7 @@ enum OBSClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .serverError: return "OBS sunucusuna ulaşılamadı."
+        case .serverError: return "OBS sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin."
         case .loginFailed(let message): return message
         case .sessionExpired: return "OBS oturumu geçersiz."
         case .invalidResponse(let message): return message
@@ -26,6 +28,8 @@ enum OBSClientError: LocalizedError {
 final class OBSClient {
     var currentCookieHeader: String?
     private(set) var studentProfile: StudentProfile?
+    private var cachedStudentProfileImage: NSImage?
+    private var studentProfileTask: Task<StudentProfile, Error>?
 
     private func verbose(_ message: String) { print("[OBS DEBUG] \(message)") }
 
@@ -39,12 +43,24 @@ final class OBSClient {
     private func cookieFileURL() -> URL {
         let fileManager = FileManager.default
         let project = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("a")
+            .appendingPathComponent("Downloads")
             .appendingPathComponent("GokturkOBS")
         if !fileManager.fileExists(atPath: project.path) {
             try? fileManager.createDirectory(at: project, withIntermediateDirectories: true)
         }
         return project.appendingPathComponent("obs-cookies.txt")
+    }
+
+    func clearCookies() throws {
+        currentCookieHeader = nil
+        studentProfile = nil
+        cachedStudentProfileImage = nil
+        studentProfileTask?.cancel()
+        studentProfileTask = nil
+        let url = cookieFileURL()
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 
     private func captureCookies(from response: HTTPURLResponse) {
@@ -116,7 +132,11 @@ final class OBSClient {
 
     func login(username: String, password: String) async throws {
         verbose("Starting login")
+        currentCookieHeader = nil
         studentProfile = nil
+        cachedStudentProfileImage = nil
+        studentProfileTask?.cancel()
+        studentProfileTask = nil
         let url = baseURL.appendingPathComponent("require/class/login.php")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -138,21 +158,30 @@ final class OBSClient {
         body.append(field("newUser", "0"))
         body.append(Data("--\(boundary)--\r\n".utf8))
         request.httpBody = body
-        verbose("Login endpoint: \(url.path)")
-        verbose("Login method: \(request.httpMethod ?? "<none>")")
-        verbose("Login request prepared; credentials omitted from logs")
+        verbose("[Login] Request: \(request.httpMethod ?? "POST") \(url.absoluteString)")
+        verbose("[Login] Content-Type: \(request.value(forHTTPHeaderField: "Content-Type") ?? "<none>")")
+        verbose("[Login] Body bytes: \(body.count)")
+        verbose("[Login] Form fields: request=login, loginAs=standard, isRegister=0, newUser=0")
+        verbose("[Login] Credential lengths: username=\(username.count), password=\(password.count); values redacted")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             verbose("Login response was not HTTP")
             throw OBSClientError.serverError
         }
-        verbose("Login status: \(http.statusCode)")
-        verbose("Login response bytes: \(data.count)")
-        verbose("Set-Cookie present: \(http.value(forHTTPHeaderField: "Set-Cookie") != nil)")
+        verbose("[Login] Response: status=\(http.statusCode), finalURL=\(http.url?.absoluteString ?? "<none>")")
+        verbose("[Login] Response metadata: mime=\(http.mimeType ?? "<none>"), bytes=\(data.count)")
+        let setCookieNames = HTTPCookie.cookies(
+            withResponseHeaderFields: http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
+                guard let key = entry.key as? String, let value = entry.value as? String else { return }
+                result[key] = value
+            },
+            for: http.url ?? url
+        ).map(\.name).sorted()
+        verbose("[Login] Set-Cookie names: \(setCookieNames.isEmpty ? "<none>" : setCookieNames.joined(separator: ", "))")
         captureCookies(from: http)
         guard 200..<300 ~= http.statusCode else { throw OBSClientError.serverError }
         let result = try JSONDecoder().decode(LoginResponse.self, from: data)
-        verbose("Login response decoded; success: \(result.success)")
+        verbose("[Login] JSON decoded: success=\(result.success), messagePresent=\(result.msg?.isEmpty == false)")
         guard result.success else { throw OBSClientError.loginFailed(result.msg ?? "Giriş başarısız.") }
         guard currentCookieHeader != nil else {
             throw OBSClientError.invalidResponse("Giriş başarılı fakat sunucu oturum çerezi göndermedi.")
@@ -161,64 +190,222 @@ final class OBSClient {
     }
 
     func loadIndex() async throws -> LessonSchedule {
-        verbose("Starting loadIndex")
         let url = baseURL.appendingPathComponent("pages/student/require/indexAction.php")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = Data("request=loadIndex".utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         guard let cookies = currentCookieHeader, !cookies.isEmpty else {
-            verbose("Index request için cookie yok")
             throw OBSClientError.sessionExpired
         }
         request.setValue(cookies, forHTTPHeaderField: "Cookie")
-        verbose("Index endpoint: \(url.path)")
-        verbose("Index method: \(request.httpMethod ?? "<none>")")
-        verbose("Index request prepared; session cookie attached")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            verbose("Index response was not HTTP")
             throw OBSClientError.serverError
         }
-        verbose("Index status: \(http.statusCode)")
-        verbose("Index response bytes: \(data.count)")
         let raw = String(data: data, encoding: .utf8) ?? "<non-UTF8 response>"
         guard 200..<300 ~= http.statusCode else { throw OBSClientError.serverError }
         if raw.trimmingCharacters(in: .whitespacesAndNewlines) == "Access denied." {
-            verbose("Index request denied; session may have expired")
             throw OBSClientError.sessionExpired
         }
         do {
             let result = try JSONDecoder().decode(OBSResponse.self, from: data)
             guard result.success else { throw OBSClientError.sessionExpired }
-            verbose("Index response decoded successfully")
             return result.data.lessonSchedule
         } catch {
-            verbose("Index response decoding failed; payload omitted")
             throw error
         }
     }
 
     func loadStudentProfile() async throws -> StudentProfile {
-        if let studentProfile { return studentProfile }
-        let url = URL(string: "https://www.tedemkolejiobs.com/pages/student/profile.php")!
+        if let studentProfile {
+            return studentProfile
+        }
+        if let studentProfileTask {
+            return try await studentProfileTask.value
+        }
+
+        let task = Task { @MainActor [weak self] () throws -> StudentProfile in
+            guard let self else {
+                throw OBSClientError.sessionExpired
+            }
+            return try await self.fetchStudentProfile()
+        }
+        studentProfileTask = task
+
+        do {
+            let profile = try await task.value
+            studentProfile = profile
+            studentProfileTask = nil
+            verbose("Student profile loaded")
+            return profile
+        } catch {
+            studentProfileTask = nil
+            throw error
+        }
+    }
+
+    private func fetchStudentProfile() async throws -> StudentProfile {
+        let url = studentProfileBaseURL().appendingPathComponent("pages/student/profile.php")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        try attachAuthenticatedSession(to: &request)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:157.0) Gecko/20100101 Firefox/157.0",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("text/html, */*; q=0.01", forHTTPHeaderField: "Accept")
+        request.setValue("tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
+        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        request.setValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
+        request.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
+        request.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+        request.setValue("trailers", forHTTPHeaderField: "TE")
+        if let refererURL = studentProfileRefererURL() {
+            request.setValue(refererURL.absoluteString, forHTTPHeaderField: "Referer")
+        }
+
+        verbose("[Profile] Request: \(request.httpMethod ?? "GET") \(url.absoluteString)")
+        verbose("[Profile] Request headers: \((request.allHTTPHeaderFields ?? [:]).keys.sorted().joined(separator: ", "))")
+        verbose("[Profile] Referer: \(request.value(forHTTPHeaderField: "Referer") ?? "<none>")")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            verbose("[Profile] Response is not HTTP")
+            throw OBSClientError.serverError
+        }
+        verbose("[Profile] Response: status=\(http.statusCode), finalURL=\(http.url?.absoluteString ?? "<none>")")
+        verbose("[Profile] Response metadata: mime=\(http.mimeType ?? "<none>"), bytes=\(data.count)")
+        guard 200..<300 ~= http.statusCode else {
+            throw OBSClientError.serverError
+        }
+        guard let html = String(data: data, encoding: .utf8) else {
+            verbose("[Profile] Response could not be decoded as UTF-8")
+            throw OBSClientError.invalidResponse("Öğrenci profili okunamadı.")
+        }
+        verbose("[Profile] ===== RAW HTML RESPONSE BEGIN =====")
+        print(html)
+        verbose("[Profile] ===== RAW HTML RESPONSE END =====")
+        verbose(
+            "[Profile] HTML markers: studentPhoto=\(html.localizedCaseInsensitiveContains("studentPhoto.php")), " +
+            "hash=\(html.localizedCaseInsensitiveContains("hash")), img=\(html.localizedCaseInsensitiveContains("<img"))"
+        )
+        guard let profile = StudentProfileHTMLParser().parse(
+            html: html,
+            profilePageURL: http.url ?? url
+        ) else {
+            verbose("[Profile] HTML parser did not produce a student profile")
+            throw OBSClientError.invalidResponse("Öğrenci profili okunamadı.")
+        }
+        let photoComponents = profile.photoURL.flatMap {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)
+        }
+        let photoQueryNames = photoComponents?.queryItems?.map(\.name).sorted() ?? []
+        verbose(
+            "[Profile] Parsed: nameLength=\(profile.name.count), studentNumberLength=\(profile.stuNo.count), " +
+            "classCodeLength=\(profile.classId.count)"
+        )
+        verbose(
+            "[Profile] Photo source: path=\(profile.photoURL?.path ?? "<none>"), " +
+            "queryKeys=\(photoQueryNames.isEmpty ? "<none>" : photoQueryNames.joined(separator: ", "))"
+        )
+        return profile
+    }
+
+    private func studentProfileBaseURL() -> URL {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+              let host = components.host else {
+            return baseURL
+        }
+        if !host.hasPrefix("www.") {
+            components.host = "www.\(host)"
+        }
+        return components.url ?? baseURL
+    }
+
+    private func studentProfileRefererURL() -> URL? {
+        guard var components = URLComponents(
+            url: studentProfileBaseURL().appendingPathComponent("workspaceFrame.php"),
+            resolvingAgainstBaseURL: false
+        ) else {
+            return nil
+        }
+        components.percentEncodedQuery =
+            "route=pages%2Fstudent%2Fprofile.php&title=Profil&tabKey=pages%2Fstudent%2Fprofile.php"
+        return components.url
+    }
+
+    func loadStudentProfileImage(for profile: StudentProfile) async throws -> NSImage? {
+        guard let photoURL = profile.photoURL else {
+            verbose("[Profile Photo] No studentPhoto.php URL was parsed; using avatar fallback")
+            return nil
+        }
+        if let cachedStudentProfileImage {
+            verbose("[Profile Photo] Memory cache hit")
+            return cachedStudentProfileImage
+        }
+
+        var request = URLRequest(url: photoURL)
+        request.httpMethod = "GET"
+        try attachAuthenticatedSession(to: &request)
+        request.setValue("image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue(
+            studentProfileBaseURL()
+                .appendingPathComponent("pages/student/profile.php")
+                .absoluteString,
+            forHTTPHeaderField: "Referer"
+        )
+
+        let queryNames = URLComponents(
+            url: photoURL,
+            resolvingAgainstBaseURL: false
+        )?.queryItems?.map(\.name).sorted() ?? []
+        verbose("[Profile Photo] Request: GET \(photoURL.path)")
+        verbose("[Profile Photo] Query keys: \(queryNames.isEmpty ? "<none>" : queryNames.joined(separator: ", "))")
+        verbose("[Profile Photo] Cookie attached: \(request.value(forHTTPHeaderField: "Cookie") != nil)")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            verbose("[Profile Photo] Response is not HTTP")
+            throw OBSClientError.serverError
+        }
+        verbose(
+            "[Profile Photo] Response: status=\(http.statusCode), mime=\(http.mimeType ?? "<none>"), " +
+            "bytes=\(data.count), finalPath=\(http.url?.path ?? "<none>")"
+        )
+        guard 200..<300 ~= http.statusCode else {
+            throw OBSClientError.serverError
+        }
+        guard !data.isEmpty else {
+            verbose("[Profile Photo] Response data is empty")
+            throw OBSClientError.invalidResponse("Profil fotoğrafı boş.")
+        }
+        guard let image = NSImage(data: data), image.isValid else {
+            verbose("[Profile Photo] NSImage decoding failed")
+            throw OBSClientError.invalidResponse("Profil fotoğrafı okunamadı.")
+        }
+
+        verbose("[Profile Photo] Decoded image: \(Int(image.size.width))x\(Int(image.size.height))")
+        cachedStudentProfileImage = image
+        verbose("[Profile Photo] Stored in memory cache")
+        return image
+    }
+
+    private func attachAuthenticatedSession(to request: inout URLRequest) throws {
         guard let cookies = currentCookieHeader, !cookies.isEmpty else {
             throw OBSClientError.sessionExpired
         }
         request.setValue(cookies, forHTTPHeaderField: "Cookie")
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode,
-              let html = String(data: data, encoding: .utf8),
-              let profile = parseStudentProfile(from: html) else {
-            throw OBSClientError.invalidResponse("Öğrenci profili okunamadı.")
-        }
-        studentProfile = profile
-        verbose("Student profile loaded")
-        return profile
+        let cookieNames = cookies
+            .split(separator: ";")
+            .compactMap { part -> String? in
+                let name = part.trimmingCharacters(in: .whitespaces)
+                    .split(separator: "=", maxSplits: 1)
+                    .first
+                return name.map(String.init)
+            }
+            .sorted()
+        verbose("[Auth] Attached cookie names: \(cookieNames.joined(separator: ", "))")
     }
 
     func loadStudentExams() async throws -> ExamDashboard {
@@ -268,70 +455,15 @@ final class OBSClient {
         }
         body.append(Data("--\(boundary)--\r\n".utf8))
         request.httpBody = body
-        verbose("Exam dashboard request started")
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw OBSClientError.serverError
         }
-        verbose("Exam dashboard response received: status=\(http.statusCode), bytes=\(data.count)")
         return data
     }
 
-    private func parseStudentProfile(from html: String) -> StudentProfile? {
-        let pattern = #"<dt\b[^>]*>(.*?)</dt>\s*<dd\b[^>]*>(.*?)</dd>"#
-        guard let expression = try? NSRegularExpression(
-            pattern: pattern,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]
-        ) else { return nil }
 
-        let source = html as NSString
-        var values: [String: String] = [:]
-        for match in expression.matches(in: html, range: NSRange(location: 0, length: source.length)) where match.numberOfRanges == 3 {
-            let label = decodeHTMLText(source.substring(with: match.range(at: 1)))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let value = decodeHTMLText(source.substring(with: match.range(at: 2)))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            values[label] = value
-        }
-
-        guard let stuNo = values["Öğrenci Numara"], !stuNo.isEmpty,
-              let classId = values["Sınıf Kodu"], !classId.isEmpty else { return nil }
-        return StudentProfile(stuNo: stuNo, classId: classId)
-    }
-
-    private func decodeHTMLText(_ html: String) -> String {
-        let tagPattern = #"<[^>]+>"#
-        let stripped = html.replacingOccurrences(
-            of: tagPattern,
-            with: "",
-            options: .regularExpression
-        )
-        var result = stripped
-            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
-            .replacingOccurrences(of: "&amp;", with: "&", options: .caseInsensitive)
-            .replacingOccurrences(of: "&lt;", with: "<", options: .caseInsensitive)
-            .replacingOccurrences(of: "&gt;", with: ">", options: .caseInsensitive)
-            .replacingOccurrences(of: "&quot;", with: "\"", options: .caseInsensitive)
-            .replacingOccurrences(of: "&#39;", with: "'", options: .caseInsensitive)
-
-        guard let expression = try? NSRegularExpression(pattern: #"&#(x[0-9a-fA-F]+|[0-9]+);"#) else {
-            return result
-        }
-        let source = result as NSString
-        for match in expression.matches(in: result, range: NSRange(location: 0, length: source.length)).reversed() {
-            let entity = source.substring(with: match.range(at: 1))
-            let scalarValue: UInt32?
-            if entity.lowercased().hasPrefix("x") {
-                scalarValue = UInt32(entity.dropFirst(), radix: 16)
-            } else {
-                scalarValue = UInt32(entity)
-            }
-            guard let scalarValue, let scalar = UnicodeScalar(scalarValue) else { continue }
-            result = (result as NSString).replacingCharacters(in: match.range, with: String(scalar))
-        }
-        return result
-    }
 }
 
 struct LoginView: View {
@@ -354,6 +486,7 @@ struct LoginView: View {
                     SecureField("Şifre", text: $model.password)
                         .textContentType(.password).focused($focusedField, equals: .password)
                         .onSubmit { if !model.isLoggingIn { Task { await model.login() } } }
+                    Toggle("Beni Hatırla", isOn: $model.rememberMe)
                 }
                 if let error = model.error {
                     Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
@@ -369,6 +502,9 @@ struct LoginView: View {
                 }
             }.formStyle(.grouped).frame(width: 380)
         }.padding(40).frame(minWidth: 500, minHeight: 520)
-            .onAppear { DispatchQueue.main.async { focusedField = .username } }
+            .onAppear {
+                model.prepareRememberedUsername()
+                DispatchQueue.main.async { focusedField = .username }
+            }
     }
 }

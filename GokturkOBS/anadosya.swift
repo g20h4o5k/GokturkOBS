@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import AppKit
+import PDFKit
 import Combine
 
 let baseURL = URL(string: "https://tedemkolejiobs.com")!
@@ -18,23 +19,61 @@ final class AppModel: ObservableObject {
     @Published var homeworkDetail: HomeworkDetail?
     @Published var isLoadingHomeworkDetail = false
     @Published var homeworkDetailError: String?
+    @Published var foodListState: FoodListLoadState = .idle
+    @Published var studentProfile: StudentProfile?
+    @Published var studentProfileImage: NSImage?
+    @Published var isLoadingStudentProfile = false
     @Published var isLoading = true
     @Published var isLoggingIn = false
     @Published var authenticated = false
     @Published var error: String?
+    @Published var rememberMe = UserDefaults.standard.bool(forKey: "rememberMe") {
+        didSet {
+            UserDefaults.standard.set(rememberMe, forKey: "rememberMe")
+            guard !rememberMe else { return }
+            do {
+                try keychain.delete()
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
 
     private let client = OBSClient()
+    private let keychain = KeychainService()
     private var homeworkDetailRequestToken: UUID?
     private var examReportRequestToken: UUID?
+    private var hasAttemptedStudentProfileLoad = false
+    private var hasStarted = false
+    private var attemptedRememberedLogin = false
 
     func start() async {
+        guard !hasStarted else {
+            isLoading = false
+            return
+        }
+        hasStarted = true
         isLoading = true
         error = nil
         if client.loadCookies() {
-            authenticated = true
-            await refresh()
+            do {
+                schedule = try await client.loadIndex()
+                authenticated = true
+                await refresh()
+            } catch OBSClientError.sessionExpired {
+                do {
+                    try client.clearCookies()
+                    await attemptRememberedLogin()
+                } catch {
+                    self.error = error.localizedDescription
+                }
+            } catch {
+                authenticated = false
+                self.error = networkErrorMessage(for: error)
+            }
         } else {
             authenticated = false
+            await attemptRememberedLogin()
         }
         isLoading = false
     }
@@ -43,16 +82,74 @@ final class AppModel: ObservableObject {
         guard !username.isEmpty, !password.isEmpty else { return }
         isLoggingIn = true
         error = nil
+        let submittedUsername = username
+        let submittedPassword = password
         do {
-            try await client.login(username: username, password: password)
+            try await client.login(username: submittedUsername, password: submittedPassword)
+            var credentialError: String?
+            do {
+                if rememberMe {
+                    try keychain.save(username: submittedUsername, password: submittedPassword)
+                } else {
+                    try keychain.delete()
+                }
+            } catch {
+                credentialError = error.localizedDescription
+            }
             password = ""
             authenticated = true
             await refresh()
+            if let credentialError {
+                error = credentialError
+            }
         } catch {
-            self.error = error.localizedDescription
+            self.error = networkErrorMessage(for: error)
             print("[App] Login failed")
         }
         isLoggingIn = false
+    }
+
+    func prepareRememberedUsername() {
+        guard rememberMe else { return }
+        do {
+            if let credentials = try keychain.load(), username.isEmpty {
+                username = credentials.username
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func attemptRememberedLogin() async {
+        guard rememberMe, !attemptedRememberedLogin else { return }
+        attemptedRememberedLogin = true
+        do {
+            guard let credentials = try keychain.load() else { return }
+            username = credentials.username
+            try await client.login(username: credentials.username, password: credentials.password)
+            schedule = try await client.loadIndex()
+            authenticated = true
+            await refresh()
+        } catch {
+            authenticated = false
+            do {
+                try client.clearCookies()
+            } catch {
+                self.error = error.localizedDescription
+                return
+            }
+            self.error = networkErrorMessage(for: error)
+        }
+    }
+
+    private func networkErrorMessage(for error: Error) -> String {
+        if let clientError = error as? OBSClientError, case .serverError = clientError {
+            return "OBS sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin."
+        }
+        if error is URLError {
+            return "OBS sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin."
+        }
+        return error.localizedDescription
     }
 
     func refresh() async {
@@ -100,6 +197,59 @@ final class AppModel: ObservableObject {
         } catch {
             guard homeworkDetailRequestToken == requestToken else { return }
             homeworkDetailError = error.localizedDescription
+        }
+    }
+
+    func loadSidebarProfile() async {
+        guard authenticated,
+              !isLoadingStudentProfile,
+              !hasAttemptedStudentProfileLoad else {
+            return
+        }
+
+        hasAttemptedStudentProfileLoad = true
+        isLoadingStudentProfile = true
+        defer {
+            isLoadingStudentProfile = false
+        }
+
+        do {
+            let profile = try await client.loadStudentProfile()
+            studentProfile = profile
+            do {
+                studentProfileImage = try await client.loadStudentProfileImage(for: profile)
+            } catch {
+                studentProfileImage = nil
+            }
+        } catch {
+            studentProfile = nil
+            studentProfileImage = nil
+        }
+    }
+
+    func loadFoodList(forceReload: Bool = false) async {
+        if !forceReload {
+            switch foodListState {
+            case .loading, .loaded, .empty:
+                return
+            case .idle, .error:
+                break
+            }
+        }
+
+        foodListState = .loading
+        do {
+            switch try await client.loadFoodList() {
+            case .pdf(let data):
+                guard let document = PDFDocument(data: data) else {
+                    throw OBSClientError.invalidResponse("Yemek listesi geçerli bir PDF dosyası değil.")
+                }
+                foodListState = .loaded(document)
+            case .empty:
+                foodListState = .empty
+            }
+        } catch {
+            foodListState = .error(networkErrorMessage(for: error))
         }
     }
 
@@ -176,6 +326,12 @@ final class AppModel: ObservableObject {
 
     func logout() {
         authenticated = false
+        error = nil
+        do {
+            try client.clearCookies()
+        } catch {
+            self.error = error.localizedDescription
+        }
         schedule = nil
         homework = []
         examDashboard = nil
@@ -187,9 +343,13 @@ final class AppModel: ObservableObject {
         homeworkDetailRequestToken = nil
         isLoadingHomeworkDetail = false
         homeworkDetailError = nil
+        foodListState = .idle
+        studentProfile = nil
+        studentProfileImage = nil
+        isLoadingStudentProfile = false
+        hasAttemptedStudentProfileLoad = false
         username = ""
         password = ""
-        error = nil
     }
 }
 
@@ -419,6 +579,8 @@ enum AppSection: Hashable {
     case schedule
     case exams
     case homework
+    case foodList
+    case profile
 }
 
 struct MainView: View {
@@ -427,14 +589,18 @@ struct MainView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                Section {
-                    Label("Ana Sayfa", systemImage: "house").tag(AppSection.home)
-                    Label("Ders Programı", systemImage: "calendar").tag(AppSection.schedule)
-                    Label("Sınavlar", systemImage: "pencil").tag(AppSection.exams)
-                    Label("Ödevler", systemImage: "book").tag(AppSection.homework)
-                }
-            }.navigationTitle("GöktürkOBS")
+            AppSidebarView(
+                selection: $selection,
+                profile: model.studentProfile,
+                profileImage: model.studentProfileImage,
+                isLoadingProfile: model.isLoadingStudentProfile
+            ) {
+                selection = .profile
+            }
+            .navigationTitle("GöktürkOBS")
+            .task {
+                await model.loadSidebarProfile()
+            }
         } detail: {
             Group {
                 switch selection {
@@ -456,6 +622,13 @@ struct MainView: View {
                     ExamsView(model: model)
                 case .homework:
                     HomeworkView(model: model)
+                case .foodList:
+                    FoodListView(model: model)
+                case .profile:
+                    ProfileDetailView(
+                        profile: model.studentProfile,
+                        image: model.studentProfileImage
+                    )
                 case nil:
                     ContentUnavailableView("Bir bölüm seçin", systemImage: "sidebar.left")
                 }

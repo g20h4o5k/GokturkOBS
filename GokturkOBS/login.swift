@@ -8,6 +8,115 @@ struct LoginResponse: Decodable {
     let msg: String?
 }
 
+private struct MobileLoginRequest: Encodable {
+    let loginAs = "standard"
+    let username: String
+    let password: String
+}
+
+private struct MobileLoginResponse: Decodable {
+    let success: Bool
+    let msg: String?
+    let status: String?
+    let userInfo: MobileUserInfo?
+
+    private enum CodingKeys: String, CodingKey {
+        case success, msg, status, userInfo
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decodeFlexibleBool(forKey: .success) ?? false
+        msg = try container.decodeFlexibleString(forKey: .msg)
+        status = try container.decodeFlexibleString(forKey: .status)
+        userInfo = try container.decodeIfPresent(MobileUserInfo.self, forKey: .userInfo)
+    }
+}
+
+private struct MobileUserInfo: Decodable {
+    let profilePhoto: String?
+    let stuNo: String?
+    let classId: String?
+    let name: String?
+    let surname: String?
+    let nameSurname: String?
+    let fullName: String?
+    let studentName: String?
+    let studentNameSurname: String?
+    let stuName: String?
+    let stuSurname: String?
+    let userName: String?
+    let userSurname: String?
+    let firstName: String?
+    let lastName: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case profilePhoto, stuNo, classId, name, surname, nameSurname, fullName
+        case studentName, studentNameSurname, stuName, stuSurname
+        case userName, userSurname, firstName, lastName
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profilePhoto = try container.decodeFlexibleString(forKey: .profilePhoto)
+        stuNo = try container.decodeFlexibleString(forKey: .stuNo)
+        classId = try container.decodeFlexibleString(forKey: .classId)
+        name = try container.decodeFlexibleString(forKey: .name)
+        surname = try container.decodeFlexibleString(forKey: .surname)
+        nameSurname = try container.decodeFlexibleString(forKey: .nameSurname)
+        fullName = try container.decodeFlexibleString(forKey: .fullName)
+        studentName = try container.decodeFlexibleString(forKey: .studentName)
+        studentNameSurname = try container.decodeFlexibleString(forKey: .studentNameSurname)
+        stuName = try container.decodeFlexibleString(forKey: .stuName)
+        stuSurname = try container.decodeFlexibleString(forKey: .stuSurname)
+        userName = try container.decodeFlexibleString(forKey: .userName)
+        userSurname = try container.decodeFlexibleString(forKey: .userSurname)
+        firstName = try container.decodeFlexibleString(forKey: .firstName)
+        lastName = try container.decodeFlexibleString(forKey: .lastName)
+    }
+
+    nonisolated var displayName: String? {
+        let directCandidates = [nameSurname, fullName, studentNameSurname, studentName]
+        if let directName = directCandidates.compactMap(Self.nonEmpty).first {
+            return directName
+        }
+
+        let givenName = Self.nonEmpty(name) ?? Self.nonEmpty(stuName) ?? Self.nonEmpty(userName) ?? Self.nonEmpty(firstName)
+        let familyName = Self.nonEmpty(surname) ?? Self.nonEmpty(stuSurname) ?? Self.nonEmpty(userSurname) ?? Self.nonEmpty(lastName)
+        let combined = [givenName, familyName].compactMap { $0 }.joined(separator: " ")
+        return Self.nonEmpty(combined)
+    }
+
+    private nonisolated static func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension KeyedDecodingContainer {
+    func decodeFlexibleString(forKey key: Key) throws -> String? {
+        guard contains(key) else { return nil }
+        if try decodeNil(forKey: key) { return nil }
+        if let value = try? decode(String.self, forKey: key) { return value }
+        if let value = try? decode(Int.self, forKey: key) { return String(value) }
+        if let value = try? decode(Double.self, forKey: key) { return String(value) }
+        if let value = try? decode(Bool.self, forKey: key) { return String(value) }
+        return nil
+    }
+
+    func decodeFlexibleBool(forKey key: Key) throws -> Bool? {
+        guard contains(key) else { return nil }
+        if try decodeNil(forKey: key) { return nil }
+        if let value = try? decode(Bool.self, forKey: key) { return value }
+        if let value = try? decode(Int.self, forKey: key) { return value != 0 }
+        if let value = try? decode(String.self, forKey: key) {
+            return ["true", "1", "success", "ok"].contains(value.lowercased())
+        }
+        return nil
+    }
+}
+
 enum OBSClientError: LocalizedError {
     case serverError
     case loginFailed(String)
@@ -37,6 +146,13 @@ final class OBSClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.httpCookieAcceptPolicy = .never
+        return URLSession(configuration: configuration)
+    }()
+
+    private lazy var mobileSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = true
+        configuration.httpCookieAcceptPolicy = .always
         return URLSession(configuration: configuration)
     }()
 
@@ -186,7 +302,56 @@ final class OBSClient {
         guard currentCookieHeader != nil else {
             throw OBSClientError.invalidResponse("Giriş başarılı fakat sunucu oturum çerezi göndermedi.")
         }
+        do {
+            try await refreshMobileProfile(username: username, password: password)
+        } catch {
+            verbose("[Mobile Login] Profile unavailable; PHP session remains authenticated")
+        }
         saveCookies()
+    }
+
+    func refreshMobileProfile(username: String, password: String) async throws {
+        let url = baseURL
+            .appendingPathComponent("obsapi", isDirectory: true)
+            .appendingPathComponent("auth/login")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(
+            MobileLoginRequest(username: username, password: password)
+        )
+
+        let (data, response) = try await mobileSession.data(for: request)
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+            throw OBSClientError.serverError
+        }
+
+        let result = try JSONDecoder().decode(MobileLoginResponse.self, from: data)
+        let info = result.userInfo
+        verbose("[Mobile Login] success=\(result.success), userInfoPresent=\(info != nil), messagePresent=\(result.msg?.isEmpty == false), statusPresent=\(result.status?.isEmpty == false)")
+        verbose("[Mobile Login] profilePhotoPresent=\(info?.profilePhoto?.isEmpty == false), profilePhotoPath=\(sanitizedPhotoPath(info?.profilePhoto) ?? "<none>")")
+        verbose("[Mobile Login] fields: stuNo=\(info?.stuNo != nil), classId=\(info?.classId != nil), nameSurname=\(info?.nameSurname != nil), fullName=\(info?.fullName != nil), studentName=\(info?.studentName != nil), studentNameSurname=\(info?.studentNameSurname != nil), stuName=\(info?.stuName != nil), stuSurname=\(info?.stuSurname != nil), name=\(info?.name != nil), surname=\(info?.surname != nil), userName=\(info?.userName != nil), userSurname=\(info?.userSurname != nil), firstName=\(info?.firstName != nil), lastName=\(info?.lastName != nil)")
+
+        guard result.success else {
+            throw OBSClientError.loginFailed(result.msg ?? result.status ?? "Mobil OBS girişi başarısız.")
+        }
+        guard let info,
+              let stuNo = info.stuNo?.trimmingCharacters(in: .whitespacesAndNewlines), !stuNo.isEmpty,
+              let classId = info.classId?.trimmingCharacters(in: .whitespacesAndNewlines), !classId.isEmpty,
+              let name = info.displayName else {
+            verbose("[Mobile Login] userInfo is incomplete; legacy profile fallback will be used")
+            return
+        }
+
+        studentProfile = StudentProfile(
+            stuNo: stuNo,
+            classId: classId,
+            name: name,
+            photoURL: profilePhotoURL(from: info.profilePhoto)
+        )
+        cachedStudentProfileImage = nil
+        verbose("[Mobile Login] StudentProfile cached from userInfo")
     }
 
     func loadIndex() async throws -> LessonSchedule {
@@ -229,7 +394,7 @@ final class OBSClient {
             guard let self else {
                 throw OBSClientError.sessionExpired
             }
-            return try await self.fetchStudentProfile()
+            return try await self.fetchLegacyStudentProfile()
         }
         studentProfileTask = task
 
@@ -245,29 +410,13 @@ final class OBSClient {
         }
     }
 
-    private func fetchStudentProfile() async throws -> StudentProfile {
-        let url = studentProfileBaseURL().appendingPathComponent("pages/student/profile.php")
+    private func fetchLegacyStudentProfile() async throws -> StudentProfile {
+        let url = baseURL.appendingPathComponent("pages/student/profile.php")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         try attachAuthenticatedSession(to: &request)
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:157.0) Gecko/20100101 Firefox/157.0",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("text/html, */*; q=0.01", forHTTPHeaderField: "Accept")
-        request.setValue("tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        request.setValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
-        request.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
-        request.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
-        request.setValue("trailers", forHTTPHeaderField: "TE")
-        if let refererURL = studentProfileRefererURL() {
-            request.setValue(refererURL.absoluteString, forHTTPHeaderField: "Referer")
-        }
-
-        verbose("[Profile] Request: \(request.httpMethod ?? "GET") \(url.absoluteString)")
-        verbose("[Profile] Request headers: \((request.allHTTPHeaderFields ?? [:]).keys.sorted().joined(separator: ", "))")
-        verbose("[Profile] Referer: \(request.value(forHTTPHeaderField: "Referer") ?? "<none>")")
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        verbose("[Legacy Profile] Loading profile.php fallback")
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -283,13 +432,6 @@ final class OBSClient {
             verbose("[Profile] Response could not be decoded as UTF-8")
             throw OBSClientError.invalidResponse("Öğrenci profili okunamadı.")
         }
-        verbose("[Profile] ===== RAW HTML RESPONSE BEGIN =====")
-        print(html)
-        verbose("[Profile] ===== RAW HTML RESPONSE END =====")
-        verbose(
-            "[Profile] HTML markers: studentPhoto=\(html.localizedCaseInsensitiveContains("studentPhoto.php")), " +
-            "hash=\(html.localizedCaseInsensitiveContains("hash")), img=\(html.localizedCaseInsensitiveContains("<img"))"
-        )
         guard let profile = StudentProfileHTMLParser().parse(
             html: html,
             profilePageURL: http.url ?? url
@@ -312,32 +454,26 @@ final class OBSClient {
         return profile
     }
 
-    private func studentProfileBaseURL() -> URL {
-        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
-              let host = components.host else {
-            return baseURL
+    private func profilePhotoURL(from value: String?) -> URL? {
+        guard let value else { return nil }
+        let path = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        if let absoluteURL = URL(string: path),
+           let scheme = absoluteURL.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return absoluteURL
         }
-        if !host.hasPrefix("www.") {
-            components.host = "www.\(host)"
-        }
-        return components.url ?? baseURL
+        return URL(string: path.trimmingCharacters(in: CharacterSet(charactersIn: "/")), relativeTo: baseURL.appendingPathComponent("/"))?.absoluteURL
     }
 
-    private func studentProfileRefererURL() -> URL? {
-        guard var components = URLComponents(
-            url: studentProfileBaseURL().appendingPathComponent("workspaceFrame.php"),
-            resolvingAgainstBaseURL: false
-        ) else {
-            return nil
-        }
-        components.percentEncodedQuery =
-            "route=pages%2Fstudent%2Fprofile.php&title=Profil&tabKey=pages%2Fstudent%2Fprofile.php"
-        return components.url
+    private func sanitizedPhotoPath(_ value: String?) -> String? {
+        guard let value, let components = URLComponents(string: value) else { return nil }
+        return components.path.isEmpty ? nil : components.path
     }
 
     func loadStudentProfileImage(for profile: StudentProfile) async throws -> NSImage? {
         guard let photoURL = profile.photoURL else {
-            verbose("[Profile Photo] No studentPhoto.php URL was parsed; using avatar fallback")
+            verbose("[Profile Photo] No photo URL; using avatar fallback")
             return nil
         }
         if let cachedStudentProfileImage {
@@ -347,14 +483,10 @@ final class OBSClient {
 
         var request = URLRequest(url: photoURL)
         request.httpMethod = "GET"
-        try attachAuthenticatedSession(to: &request)
+        if let cookies = currentCookieHeader, !cookies.isEmpty {
+            request.setValue(cookies, forHTTPHeaderField: "Cookie")
+        }
         request.setValue("image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8", forHTTPHeaderField: "Accept")
-        request.setValue(
-            studentProfileBaseURL()
-                .appendingPathComponent("pages/student/profile.php")
-                .absoluteString,
-            forHTTPHeaderField: "Referer"
-        )
 
         let queryNames = URLComponents(
             url: photoURL,
@@ -364,7 +496,7 @@ final class OBSClient {
         verbose("[Profile Photo] Query keys: \(queryNames.isEmpty ? "<none>" : queryNames.joined(separator: ", "))")
         verbose("[Profile Photo] Cookie attached: \(request.value(forHTTPHeaderField: "Cookie") != nil)")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await mobileSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             verbose("[Profile Photo] Response is not HTTP")
             throw OBSClientError.serverError

@@ -59,6 +59,16 @@ final class AppModel: ObservableObject {
             do {
                 schedule = try await client.loadIndex()
                 authenticated = true
+                if rememberMe, let credentials = try? keychain.load() {
+                    do {
+                        try await client.refreshMobileProfile(
+                            username: credentials.username,
+                            password: credentials.password
+                        )
+                    } catch {
+                        print("[App] Mobile profile refresh failed; continuing with PHP session")
+                    }
+                }
                 await refresh()
             } catch OBSClientError.sessionExpired {
                 do {

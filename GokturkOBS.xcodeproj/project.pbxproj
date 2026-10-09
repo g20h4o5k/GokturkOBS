@@ -71,6 +71,7 @@
 				877270F030753F28001C9D63 /* homework.swift */,
 				877270F130753F28001C9D63 /* LICENSE */,
 				877270F230753F28001C9D63 /* login.swift */,
+				877270ED30753F28001C9D63 /* anadosya.swift */,
 				877270F330753F28001C9D63 /* lSchedule.swift */,
 				877270F430753F28001C9D63 /* MyApp-Bridging-Header.h */,
 				877270F530753F28001C9D63 /* README.md */,
@@ -78,7 +79,6 @@
 				870729BC30769BA100CB71A2 /* foodList.swift */,
 				870729BE30769F9D00CB71A2 /* SidebarProfileView.swift */,
 				870729C030769FC900CB71A2 /* StudentProfileHTMLParser.swift */,
-				877270ED30753F28001C9D63 /* anadosya.swift */,
 			);
 			path = GokturkOBS;
 			sourceTree = "<group>";
@@ -300,7 +300,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 2937L6R7J4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
@@ -352,7 +352,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 2937L6R7J4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;

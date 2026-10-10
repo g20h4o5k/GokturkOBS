@@ -7,6 +7,7 @@ struct StudentProfile: Codable {
     let classId: String
     let name: String
     let photoURL: URL?
+    var stuType: String? = nil
 }
 
 struct ExamDashboard: Codable {

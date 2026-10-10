@@ -3,6 +3,7 @@ import AppKit
 
 struct AppSidebarView: View {
     @Binding var selection: AppSection?
+    @State private var examsExpanded = true
     let profile: StudentProfile?
     let profileImage: NSImage?
     let isLoadingProfile: Bool
@@ -16,8 +17,15 @@ struct AppSidebarView: View {
                         .tag(AppSection.home)
                     Label("Ders Programı", systemImage: "calendar")
                         .tag(AppSection.schedule)
-                    Label("Sınavlar", systemImage: "pencil")
-                        .tag(AppSection.exams)
+                    DisclosureGroup(isExpanded: $examsExpanded) {
+                        Label("Deneme Sınavı", systemImage: "doc.text")
+                            .tag(AppSection.practiceExams)
+                        Label("Taramalar", systemImage: "checklist")
+                            .tag(AppSection.taramalar)
+                    } label: {
+                        Label("Sınavlar", systemImage: "graduationcap")
+                    }
+                    .accessibilityHint(examsExpanded ? "Alt menüyü daraltır" : "Alt menüyü genişletir")
                     Label("Ödevler", systemImage: "book")
                         .tag(AppSection.homework)
                     Label("Yemek Listesi", systemImage: "fork.knife")

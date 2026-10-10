@@ -1,6 +1,57 @@
 import SwiftUI
 import Foundation
 
+struct TaramaListResponse: Decodable {
+    let success: Bool
+    let result: [TaramaExam]?
+    let message: String?
+
+    private enum CodingKeys: String, CodingKey { case success, result, msg, message, status }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        success = values.taramaBool(forKey: .success) ?? false
+        result = try values.decodeIfPresent([TaramaExam].self, forKey: .result)
+        message = values.taramaString(forKey: .msg)
+            ?? values.taramaString(forKey: .message)
+            ?? values.taramaString(forKey: .status)
+    }
+}
+
+struct TaramaDetailResponse: Decodable {
+    let success: Bool
+    let data: TaramaDetail?
+    let message: String?
+
+    private enum CodingKeys: String, CodingKey { case success, data, msg, message, status }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        success = values.taramaBool(forKey: .success) ?? false
+        data = try values.decodeIfPresent(TaramaDetail.self, forKey: .data)
+        message = values.taramaString(forKey: .msg)
+            ?? values.taramaString(forKey: .message)
+            ?? values.taramaString(forKey: .status)
+    }
+}
+
+struct TaramaSubjectAnalysisResponse: Decodable {
+    let success: Bool
+    let data: [TaramaSubjectAnalysis]?
+    let message: String?
+
+    private enum CodingKeys: String, CodingKey { case success, data, msg, message, status }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        success = values.taramaBool(forKey: .success) ?? false
+        data = try values.decodeIfPresent([TaramaSubjectAnalysis].self, forKey: .data)
+        message = values.taramaString(forKey: .msg)
+            ?? values.taramaString(forKey: .message)
+            ?? values.taramaString(forKey: .status)
+    }
+}
+
 struct TaramaExam: Decodable, Identifiable, Hashable {
     let examType: String
     let examCode: String
@@ -27,10 +78,9 @@ struct TaramaExam: Decodable, Identifiable, Hashable {
     }
 }
 
-struct TaramaLesson: Decodable, Identifiable {
+struct TaramaLesson: Decodable {
     let lesson: String
     let group: String?
-    var id: String { "\(group ?? "")|\(lesson)" }
 }
 
 struct TaramaLabeledValue: Decodable, Identifiable {
@@ -82,6 +132,7 @@ struct TaramaDetail: Decodable {
               questionCounts.indices.contains(index),
               let questionCount = questionCounts[index], questionCount > 0 else { return nil }
         return TaramaLessonResult(
+            index: index,
             lesson: lessons[index],
             questionCount: questionCount,
             correct: correctCounts[safe: index] ?? nil,
@@ -92,12 +143,13 @@ struct TaramaDetail: Decodable {
 }
 
 struct TaramaLessonResult: Identifiable {
+    let index: Int
     let lesson: TaramaLesson
     let questionCount: Double
     let correct: Double?
     let incorrect: Double?
     let net: Double?
-    var id: String { lesson.id }
+    var id: Int { index }
 }
 
 struct TaramaSubjectAnalysis: Decodable, Identifiable {
@@ -447,31 +499,40 @@ private extension Collection {
 }
 
 private extension KeyedDecodingContainer {
+    func taramaBool(forKey key: Key) -> Bool? {
+        if let value = try? decode(Bool.self, forKey: key) { return value }
+        if let value = try? decode(Int.self, forKey: key) { return value != 0 }
+        if let text = try? decode(String.self, forKey: key) {
+            return ["true", "1", "success", "ok"].contains(text.lowercased())
+        }
+        return nil
+    }
+
     func taramaString(forKey key: Key) -> String? {
-        if let value = try? decodeIfPresent(String.self, forKey: key) { return value }
-        if let value = try? decodeIfPresent(Int.self, forKey: key) { return value.map(String.init) }
-        if let value = try? decodeIfPresent(Double.self, forKey: key) { return value.map(String.init) }
+        if let value = try? decode(String.self, forKey: key) { return value }
+        if let value = try? decode(Int.self, forKey: key) { return String(value) }
+        if let value = try? decode(Double.self, forKey: key) { return String(value) }
         return nil
     }
 
     func taramaDouble(forKey key: Key) -> Double? {
-        if let value = try? decodeIfPresent(Double.self, forKey: key) { return value }
-        if let value = try? decodeIfPresent(Int.self, forKey: key) { return value.map(Double.init) }
-        if let value = try? decodeIfPresent(String.self, forKey: key), let text = value {
+        if let value = try? decode(Double.self, forKey: key) { return value }
+        if let value = try? decode(Int.self, forKey: key) { return Double(value) }
+        if let text = try? decode(String.self, forKey: key) {
             return Double(text.replacingOccurrences(of: ",", with: "."))
         }
         return nil
     }
 
     func taramaNumberArray(forKey key: Key) -> [Double?] {
-        guard let values = try? decodeIfPresent([JSONValue].self, forKey: key) else { return [] }
-        return (values ?? []).map(\.numberValue)
+        guard let values = try? decode([JSONValue].self, forKey: key) else { return [] }
+        return values.map(\.numberValue)
     }
 
     func taramaStringArray(forKey key: Key) -> [String] {
-        guard let values = try? decodeIfPresent([JSONValue].self, forKey: key) else { return [] }
-        return (values ?? []).map { value in
-            value.stringValue ?? value.numberValue.map(String.init) ?? ""
+        guard let values = try? decode([JSONValue].self, forKey: key) else { return [] }
+        return values.map { value in
+            value.stringValue ?? value.numberValue.map { String($0) } ?? ""
         }
     }
 }

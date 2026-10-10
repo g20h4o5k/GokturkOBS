@@ -16,6 +16,15 @@ final class AppModel: ObservableObject {
     @Published var examReport: ExamSchoolReport?
     @Published var isLoadingExamReport = false
     @Published var examReportError: String?
+    @Published var taramalar: [TaramaExam] = []
+    @Published var taramaDetail: TaramaDetail?
+    @Published var taramaSubjectAnalysis: [TaramaSubjectAnalysis] = []
+    @Published var isLoadingTaramalar = false
+    @Published var isLoadingTaramaDetail = false
+    @Published var isLoadingTaramaAnalysis = false
+    @Published var taramalarError: String?
+    @Published var taramaDetailError: String?
+    @Published var taramaAnalysisError: String?
     @Published var homeworkDetail: HomeworkDetail?
     @Published var isLoadingHomeworkDetail = false
     @Published var homeworkDetailError: String?
@@ -47,6 +56,11 @@ final class AppModel: ObservableObject {
     private let keychain = KeychainService()
     private var homeworkDetailRequestToken: UUID?
     private var examReportRequestToken: UUID?
+    private var taramalarRequestToken: UUID?
+    private var taramaDetailRequestToken: UUID?
+    private var taramaAnalysisRequestToken: UUID?
+    private var loadedTaramaDetailCode: String?
+    private var loadedTaramaAnalysisCode: String?
     private var hasAttemptedStudentProfileLoad = false
     private var hasStarted = false
     private var attemptedRememberedLogin = false
@@ -338,6 +352,112 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func loadTaramalar(forceReload: Bool = false) async {
+        guard forceReload || (taramalar.isEmpty && !isLoadingTaramalar) else { return }
+        let requestToken = UUID()
+        taramalarRequestToken = requestToken
+        taramalarError = nil
+        isLoadingTaramalar = true
+        defer {
+            if taramalarRequestToken == requestToken { isLoadingTaramalar = false }
+        }
+
+        do {
+            let loaded = try await client.loadTaramalar()
+            guard taramalarRequestToken == requestToken, !Task.isCancelled else { return }
+            taramalar = Self.sortTaramalar(loaded)
+        } catch {
+            guard taramalarRequestToken == requestToken, !Task.isCancelled else { return }
+            taramalarError = taramaErrorMessage(error, fallback: "Tarama sonuçları alınamadı.")
+        }
+    }
+
+    func loadTaramaDetail(examCode: String) async {
+        if loadedTaramaDetailCode == examCode, taramaDetail != nil { return }
+        let requestToken = UUID()
+        taramaDetailRequestToken = requestToken
+        loadedTaramaDetailCode = nil
+        loadedTaramaAnalysisCode = nil
+        taramaDetail = nil
+        taramaSubjectAnalysis = []
+        taramaDetailError = nil
+        taramaAnalysisError = nil
+        isLoadingTaramaDetail = true
+        defer {
+            if taramaDetailRequestToken == requestToken { isLoadingTaramaDetail = false }
+        }
+
+        do {
+            let detail = try await client.loadTaramaDetail(examCode: examCode)
+            guard taramaDetailRequestToken == requestToken, !Task.isCancelled else { return }
+            taramaDetail = detail
+            loadedTaramaDetailCode = examCode
+        } catch {
+            guard taramaDetailRequestToken == requestToken, !Task.isCancelled else { return }
+            taramaDetailError = taramaErrorMessage(error, fallback: "Tarama detayları yüklenemedi.")
+        }
+    }
+
+    func loadTaramaSubjectAnalysis(examCode: String, forceReload: Bool = false) async {
+        guard forceReload || loadedTaramaAnalysisCode != examCode else { return }
+        guard !isLoadingTaramaAnalysis else { return }
+        let requestToken = UUID()
+        taramaAnalysisRequestToken = requestToken
+        taramaAnalysisError = nil
+        isLoadingTaramaAnalysis = true
+        defer {
+            if taramaAnalysisRequestToken == requestToken { isLoadingTaramaAnalysis = false }
+        }
+
+        do {
+            let analysis = try await client.loadTaramaSubjectAnalysis(examCode: examCode)
+            guard taramaAnalysisRequestToken == requestToken, !Task.isCancelled else { return }
+            taramaSubjectAnalysis = analysis
+            loadedTaramaAnalysisCode = examCode
+        } catch {
+            guard taramaAnalysisRequestToken == requestToken, !Task.isCancelled else { return }
+            taramaAnalysisError = taramaErrorMessage(error, fallback: "Kazanım analizi yüklenemedi.")
+        }
+    }
+
+    private func taramaErrorMessage(_ error: Error, fallback: String) -> String {
+        if let clientError = error as? OBSClientError {
+            switch clientError {
+            case .sessionExpired, .recoveryUnavailable, .loginFailed:
+                return "Mobil OBS oturumu yenilenemedi. Lütfen yeniden giriş yapın."
+            case .invalidResponse(let message):
+                return message
+            case .serverError, .temporaryServer:
+                return clientError.localizedDescription
+            }
+        }
+        if error is CancellationError { return fallback }
+        return error.localizedDescription
+    }
+
+    private static func sortTaramalar(_ exams: [TaramaExam]) -> [TaramaExam] {
+        let formats = ["yyyy-MM-dd'T'HH:mm:ss.SSSZ", "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd", "dd.MM.yyyy", "dd/MM/yyyy"]
+        let locale = Locale(identifier: "tr_TR")
+        func date(_ text: String?) -> Date? {
+            guard let text else { return nil }
+            for format in formats {
+                let formatter = DateFormatter()
+                formatter.locale = locale
+                formatter.dateFormat = format
+                if let value = formatter.date(from: text) { return value }
+            }
+            return nil
+        }
+        return exams.enumerated().sorted { lhs, rhs in
+            switch (date(lhs.element.date), date(rhs.element.date)) {
+            case let (left?, right?): return left == right ? lhs.offset < rhs.offset : left > right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
+
     func openHomeworkFile(_ file: HomeworkFile) async throws -> URL {
         let fileManager = FileManager.default
         guard let downloadsDirectory = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
@@ -404,6 +524,20 @@ final class AppModel: ObservableObject {
         examReportRequestToken = nil
         isLoadingExamReport = false
         examReportError = nil
+        taramalar = []
+        taramaDetail = nil
+        taramaSubjectAnalysis = []
+        taramalarRequestToken = nil
+        taramaDetailRequestToken = nil
+        taramaAnalysisRequestToken = nil
+        loadedTaramaDetailCode = nil
+        loadedTaramaAnalysisCode = nil
+        isLoadingTaramalar = false
+        isLoadingTaramaDetail = false
+        isLoadingTaramaAnalysis = false
+        taramalarError = nil
+        taramaDetailError = nil
+        taramaAnalysisError = nil
         homeworkDetail = nil
         homeworkDetailRequestToken = nil
         isLoadingHomeworkDetail = false
@@ -642,7 +776,8 @@ private struct HomeworkFileDownloadRow: View {
 enum AppSection: Hashable {
     case home
     case schedule
-    case exams
+    case practiceExams
+    case taramalar
     case homework
     case foodList
     case profile
@@ -683,8 +818,10 @@ struct MainView: View {
                             description: Text(model.error ?? "Gösterilecek ders programı bulunamadı.")
                         )
                     }
-                case .exams:
+                case .practiceExams:
                     ExamsView(model: model)
+                case .taramalar:
+                    TaramalarView(model: model)
                 case .homework:
                     HomeworkView(model: model)
                 case .foodList:
@@ -721,7 +858,7 @@ struct RootView: View {
             if model.isLoading {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("GöktürkOBS başlatılıyor...").foregroundStyle(.secondary)
+                    Text("i am groot").foregroundStyle(.secondary)
                 }
             } else if model.authenticated {
                 MainView(model: model)
@@ -743,6 +880,6 @@ struct GokturkOBSApp: App {
                 await model.start()
             }
         }
-        .windowResizability(.automatic)
+        .windowResizability(.contentMinSize)
     }
 }

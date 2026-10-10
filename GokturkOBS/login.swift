@@ -37,6 +37,7 @@ private struct MobileUserInfo: Decodable {
     let profilePhoto: String?
     let stuNo: String?
     let classId: String?
+    let stuType: String?
     let name: String?
     let surname: String?
     let nameSurname: String?
@@ -51,7 +52,7 @@ private struct MobileUserInfo: Decodable {
     let lastName: String?
 
     private enum CodingKeys: String, CodingKey {
-        case profilePhoto, stuNo, classId, name, surname, nameSurname, fullName
+        case profilePhoto, stuNo, classId, stuType, name, surname, nameSurname, fullName
         case studentName, studentNameSurname, stuName, stuSurname
         case userName, userSurname, firstName, lastName
     }
@@ -61,6 +62,7 @@ private struct MobileUserInfo: Decodable {
         profilePhoto = try container.decodeFlexibleString(forKey: .profilePhoto)
         stuNo = try container.decodeFlexibleString(forKey: .stuNo)
         classId = try container.decodeFlexibleString(forKey: .classId)
+        stuType = try container.decodeFlexibleString(forKey: .stuType)
         name = try container.decodeFlexibleString(forKey: .name)
         surname = try container.decodeFlexibleString(forKey: .surname)
         nameSurname = try container.decodeFlexibleString(forKey: .nameSurname)
@@ -149,6 +151,7 @@ final class OBSClient {
     private var cachedStudentProfileImage: NSImage?
     private var studentProfileTask: Task<StudentProfile, Error>?
     private var mobileAuthenticated = false
+    private var mobileStudentType: String?
     private var credentialProvider: (() throws -> StoredCredentials?)?
     private var webRecovery: (id: UUID, task: Task<Void, Error>)?
     private var mobileRecovery: (id: UUID, task: Task<Void, Error>)?
@@ -207,6 +210,7 @@ final class OBSClient {
         studentProfile = nil
         cachedStudentProfileImage = nil
         mobileAuthenticated = false
+        mobileStudentType = nil
         studentProfileTask?.cancel()
         studentProfileTask = nil
         let url = cookieFileURL()
@@ -365,6 +369,7 @@ final class OBSClient {
     }
 
     func refreshMobileProfile(username: String, password: String) async throws {
+        mobileStudentType = nil
         let url = baseURL
             .appendingPathComponent("obsapi", isDirectory: true)
             .appendingPathComponent("auth/login")
@@ -391,6 +396,7 @@ final class OBSClient {
             throw OBSClientError.loginFailed(result.msg ?? result.status ?? "Mobil OBS girişi başarısız.")
         }
         mobileAuthenticated = true
+        mobileStudentType = info?.stuType?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let info,
               let stuNo = info.stuNo?.trimmingCharacters(in: .whitespacesAndNewlines), !stuNo.isEmpty,
               let classId = info.classId?.trimmingCharacters(in: .whitespacesAndNewlines), !classId.isEmpty,
@@ -403,7 +409,8 @@ final class OBSClient {
             stuNo: stuNo,
             classId: classId,
             name: name,
-            photoURL: profilePhotoURL(from: info.profilePhoto)
+            photoURL: profilePhotoURL(from: info.profilePhoto),
+            stuType: info.stuType?.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         cachedStudentProfileImage = nil
         verbose("[Mobile Login] StudentProfile cached from userInfo")
@@ -769,6 +776,93 @@ final class OBSClient {
             guard result.success else { throw OBSClientError.serverError }
             return result
         }
+    }
+
+    func loadTaramalar() async throws -> [TaramaExam] {
+        try await performRead(for: .mobile) { [self] in
+            try ensureMobileSession()
+            let profile = try await loadStudentProfile()
+            guard let studentType = (mobileStudentType ?? profile.stuType)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !studentType.isEmpty else {
+                throw OBSClientError.invalidResponse("Öğrenci türü bilgisi alınamadı.")
+            }
+            let data = try await mobileGET(
+                path: "exam/getExamList",
+                queryItems: [
+                    URLQueryItem(name: "stuNo", value: profile.stuNo),
+                    URLQueryItem(name: "stuType", value: studentType)
+                ]
+            )
+            let response = try JSONDecoder().decode(TaramaListResponse.self, from: data)
+            guard response.success else {
+                throw OBSClientError.invalidResponse(response.message ?? "Tarama sonuçları alınamadı.")
+            }
+            guard let exams = response.result else {
+                throw OBSClientError.invalidResponse("Tarama listesi yanıtı geçersiz.")
+            }
+            return exams.filter { $0.examType.caseInsensitiveCompare("DBS") == .orderedSame }
+        }
+    }
+
+    func loadTaramaDetail(examCode: String) async throws -> TaramaDetail {
+        try await performRead(for: .mobile) { [self] in
+            try ensureMobileSession()
+            let profile = try await loadStudentProfile()
+            let data = try await mobileGET(
+                path: "exam/dbs/getExamDetail",
+                queryItems: [
+                    URLQueryItem(name: "examcode", value: examCode),
+                    URLQueryItem(name: "stuNo", value: profile.stuNo)
+                ]
+            )
+            let response = try JSONDecoder().decode(TaramaDetailResponse.self, from: data)
+            guard response.success else {
+                throw OBSClientError.invalidResponse(response.message ?? "Tarama detayları yüklenemedi.")
+            }
+            guard let detail = response.data else {
+                throw OBSClientError.invalidResponse("Tarama detayı yanıtı geçersiz.")
+            }
+            return detail
+        }
+    }
+
+    func loadTaramaSubjectAnalysis(examCode: String) async throws -> [TaramaSubjectAnalysis] {
+        try await performRead(for: .mobile) { [self] in
+            try ensureMobileSession()
+            let profile = try await loadStudentProfile()
+            let data = try await mobileGET(
+                path: "exam/dbs/getSubjectAnalyse",
+                queryItems: [
+                    URLQueryItem(name: "examcode", value: examCode),
+                    URLQueryItem(name: "stuNo", value: profile.stuNo)
+                ]
+            )
+            let response = try JSONDecoder().decode(TaramaSubjectAnalysisResponse.self, from: data)
+            guard response.success else {
+                throw OBSClientError.invalidResponse(response.message ?? "Kazanım analizi yüklenemedi.")
+            }
+            guard let analysis = response.data else {
+                throw OBSClientError.invalidResponse("Kazanım analizi yanıtı geçersiz.")
+            }
+            return analysis
+        }
+    }
+
+    private func mobileGET(path: String, queryItems: [URLQueryItem]) async throws -> Data {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("obsapi", isDirectory: true).appendingPathComponent(path),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = queryItems
+        guard let url = components?.url,
+              url.scheme?.lowercased() == "https",
+              url.host == baseURL.host else {
+            throw OBSClientError.invalidResponse("OBS API adresi oluşturulamadı.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try await mobileData(for: request)
     }
 
     private func postExamDashboard(fields: [(String, String)]) async throws -> Data {

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import GokturkOBS
 
 private enum RetryPolicy {
     static func boundedRetryAfter(_ value: String?) -> TimeInterval? {
@@ -20,6 +21,38 @@ private enum RetryPolicy {
             .lowercased()
         return ["session", "oturum", "login", "giriş", "unauthorized", "access denied"]
             .contains { message.contains($0) }
+    }
+}
+
+@MainActor
+struct TaramaDecodingTests {
+    @Test
+    func listDecodesFlexibleValuesAndKeepsExamType() throws {
+        let data = Data(#"{"success":true,"result":[{"examType":"DBS","sinavKod":42,"sinavAd":"Tarama","sinavTarih":"10.10.2026","point":"387,5"}]}"#.utf8)
+        let response = try JSONDecoder().decode(TaramaListResponse.self, from: data)
+
+        #expect(response.success)
+        #expect(response.result?.first?.examType == "DBS")
+        #expect(response.result?.first?.examCode == "42")
+        #expect(response.result?.first?.point == 387.5)
+    }
+
+    @Test
+    func detailHandlesUnequalParallelArrays() throws {
+        let data = Data(#"{"success":true,"data":{"lessons":[{"lesson":"Türkçe"},{"lesson":"Matematik"}],"ss":[20,0],"d":[18],"y":[2],"n":[17.33],"p":[],"derece":[],"sayi":[],"examKey":["AB-CD"],"answer":["AB_CD"]}}"#.utf8)
+        let response = try JSONDecoder().decode(TaramaDetailResponse.self, from: data)
+
+        #expect(response.data?.lessonResult(at: 0)?.correct == 18)
+        #expect(response.data?.lessonResult(at: 1) == nil)
+        #expect(response.data?.answerKeys.first == "AB-CD")
+    }
+
+    @Test
+    func subjectAnalysisPreservesBackendPerformanceScale() throws {
+        let data = Data(#"{"success":true,"data":[{"lesson":"Matematik","konuAd":"Oran","SSay":"4","Dog":3,"Yan":"1","Bas":"0,75"}]}"#.utf8)
+        let response = try JSONDecoder().decode(TaramaSubjectAnalysisResponse.self, from: data)
+
+        #expect(response.data?.first?.performance == 0.75)
     }
 }
 

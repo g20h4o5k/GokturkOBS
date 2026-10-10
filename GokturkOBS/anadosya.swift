@@ -52,7 +52,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private let client = OBSClient()
+    let client = OBSClient()
     private let keychain = KeychainService()
     private var homeworkDetailRequestToken: UUID?
     private var examReportRequestToken: UUID?
@@ -291,7 +291,7 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            let profile = try await client.loadStudentProfile()
+            let profile = try await client.loadCompleteStudentProfile()
             studentProfile = profile
             do {
                 studentProfileImage = try await client.loadStudentProfileImage(for: profile)
@@ -321,7 +321,7 @@ final class AppModel: ObservableObject {
                 guard let document = PDFDocument(data: data) else {
                     throw OBSClientError.invalidResponse("Yemek listesi geçerli bir PDF dosyası değil.")
                 }
-                foodListState = .loaded(document)
+                foodListState = .loaded(document, FoodMenuParser.parse(document))
             case .empty:
                 foodListState = .empty
             }
@@ -330,7 +330,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadExamReport(examId: String) async {
+    func loadExamReport(examId: String, examType: String) async {
         let requestToken = UUID()
         examReportRequestToken = requestToken
         examReport = nil
@@ -343,7 +343,7 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            let report = try await client.loadSchoolReport(examId: examId)
+            let report = try await client.loadSchoolReport(examId: examId, examType: examType)
             guard examReportRequestToken == requestToken else { return }
             examReport = report
         } catch {
@@ -780,6 +780,11 @@ enum AppSection: Hashable {
     case taramalar
     case homework
     case foodList
+    case messages
+    case attendance
+    case teachers
+    case announcements
+    case events
     case profile
 }
 
@@ -788,7 +793,11 @@ struct MainView: View {
     @State private var selection: AppSection? = .schedule
 
     var body: some View {
-        NavigationSplitView {
+        GeometryReader { proxy in
+            let maximumSidebarWidth = min(320, max(180, proxy.size.width * 0.34))
+            let idealSidebarWidth = min(sidebarContentWidth, maximumSidebarWidth)
+
+            NavigationSplitView {
             AppSidebarView(
                 selection: $selection,
                 profile: model.studentProfile,
@@ -801,7 +810,12 @@ struct MainView: View {
             .task {
                 await model.loadSidebarProfile()
             }
-        } detail: {
+            .navigationSplitViewColumnWidth(
+                min: 180,
+                ideal: idealSidebarWidth,
+                max: maximumSidebarWidth
+            )
+            } detail: {
             Group {
                 switch selection {
                 case .home:
@@ -826,6 +840,16 @@ struct MainView: View {
                     HomeworkView(model: model)
                 case .foodList:
                     FoodListView(model: model)
+                case .messages:
+                    MessagesView(client: model.client)
+                case .attendance:
+                    AttendanceView(client: model.client)
+                case .teachers:
+                    TeachersView(client: model.client)
+                case .announcements:
+                    AnnouncementsView(client: model.client)
+                case .events:
+                    EventsView(client: model.client)
                 case .profile:
                     ProfileDetailView(
                         profile: model.studentProfile,
@@ -846,12 +870,20 @@ struct MainView: View {
                     }
                 }
             }
+            }
+            .navigationSplitViewStyle(.balanced)
         }
+    }
+
+    private var sidebarContentWidth: CGFloat {
+        let nameLength = model.studentProfile?.name.count ?? 0
+        return min(300, 215 + CGFloat(max(nameLength - 14, 0)) * 5.5)
     }
 }
 
 struct RootView: View {
     @ObservedObject var model: AppModel
+    @AppStorage("appAppearance") private var appearance = AppAppearance.system.rawValue
 
     var body: some View {
         Group {
@@ -866,6 +898,7 @@ struct RootView: View {
                 LoginView(model: model)
             }
         }
+        .preferredColorScheme(AppAppearance(rawValue: appearance)?.colorScheme)
     }
 }
 

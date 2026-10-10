@@ -1,6 +1,29 @@
 import SwiftUI
 import AppKit
 
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .system: "Otomatik"
+        case .light: "Açık"
+        case .dark: "Koyu"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 struct AppSidebarView: View {
     @Binding var selection: AppSection?
     @State private var examsExpanded = true
@@ -30,6 +53,16 @@ struct AppSidebarView: View {
                         .tag(AppSection.homework)
                     Label("Yemek Listesi", systemImage: "fork.knife")
                         .tag(AppSection.foodList)
+                    Label("Mesajlar", systemImage: "envelope")
+                        .tag(AppSection.messages)
+                    Label("Devamsızlık", systemImage: "calendar.badge.exclamationmark")
+                        .tag(AppSection.attendance)
+                    Label("Öğretmenlerim", systemImage: "person.2")
+                        .tag(AppSection.teachers)
+                    Label("Duyurular", systemImage: "megaphone")
+                        .tag(AppSection.announcements)
+                    Label("Etkinlikler", systemImage: "calendar.day.timeline.left")
+                        .tag(AppSection.events)
                 }
             }
 
@@ -116,23 +149,59 @@ struct ProfileDetailView: View {
 private struct ProfileDetailContent: View {
     let profile: StudentProfile
     let image: NSImage?
+    @AppStorage("appAppearance") private var appearance = AppAppearance.system.rawValue
 
     var body: some View {
-        VStack(spacing: 18) {
-            ProfileAvatarView(name: profile.name, image: image, size: 112)
+        ScrollView {
+            VStack(spacing: 18) {
+                FullProfileImage(name: profile.name, image: image)
 
             Text(profile.name.capitalized(with: Locale(identifier: "tr_TR")))
                 .font(.title.bold())
                 .multilineTextAlignment(.center)
 
-            VStack(alignment: .leading, spacing: 10) {
-                LabeledContent("Sınıf Kodu", value: profile.classId)
-                LabeledContent("Öğrenci Numarası", value: profile.stuNo)
+                VStack(alignment: .leading, spacing: 10) {
+                    LabeledContent("Sınıf Kodu", value: profile.classId)
+                    LabeledContent("Öğrenci Numarası", value: profile.stuNo)
+                    if let parentName = profile.parentName, !parentName.isEmpty {
+                        LabeledContent("Veli Adı Soyadı", value: parentName)
+                    }
+                }
+                .frame(maxWidth: 420)
+
+                Divider().frame(maxWidth: 420)
+
+                Picker("Uygulama Teması", selection: $appearance) {
+                    ForEach(AppAppearance.allCases) { option in
+                        Text(option.title).tag(option.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
             }
-            .frame(maxWidth: 360)
+            .padding(32)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct FullProfileImage: View {
+    let name: String
+    let image: NSImage?
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 260, maxHeight: 320)
+                .padding(8)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 14))
+                .accessibilityLabel("\(name) profil fotoğrafı")
+        } else {
+            ProfileAvatarView(name: name, image: nil, size: 112)
+        }
     }
 }
 

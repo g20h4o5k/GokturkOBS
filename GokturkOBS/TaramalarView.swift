@@ -61,6 +61,14 @@ struct TaramaExam: Decodable, Identifiable, Hashable {
 
     var id: String { examCode }
 
+    init(indexRecord: WebExamRecord) {
+        examType = indexRecord.examType
+        examCode = indexRecord.sinavKod
+        name = indexRecord.sinavAd
+        date = indexRecord.sinavTarih
+        point = indexRecord.point
+    }
+
     private enum CodingKeys: String, CodingKey {
         case examType, sinavKod, sinavAd, sinavTarih, point
     }
@@ -177,6 +185,24 @@ struct TaramaSubjectAnalysis: Decodable, Identifiable {
     }
 }
 
+struct TaramaAnalysisGroup: Identifiable {
+    let lesson: String
+    var entries: [TaramaSubjectAnalysis]
+    var id: String { lesson }
+}
+
+enum TaramaAnalysisGrouping {
+    static func group(_ items: [TaramaSubjectAnalysis]) -> [TaramaAnalysisGroup] {
+        var order: [String] = []
+        var buckets: [String: [TaramaSubjectAnalysis]] = [:]
+        for item in items {
+            if buckets[item.lesson] == nil { order.append(item.lesson) }
+            buckets[item.lesson, default: []].append(item)
+        }
+        return order.map { TaramaAnalysisGroup(lesson: $0, entries: buckets[$0] ?? []) }
+    }
+}
+
 struct TaramaAnswer: Identifiable {
     enum Status { case correct, incorrect, unanswered, unknown }
     let number: Int
@@ -208,7 +234,7 @@ struct TaramalarView: View {
                 } else {
                     List(model.taramalar) { exam in
                         NavigationLink {
-                            TaramaDetailView(exam: exam, model: model)
+                            ExamDetailView(exam: StudentExam(taramaExam: exam), model: model)
                         } label: {
                             TaramaRow(exam: exam)
                         }
@@ -266,10 +292,12 @@ private struct TaramaDetailView: View {
 
     var body: some View {
         Group {
-            if model.isLoadingTaramaDetail && model.taramaDetail == nil {
+            if model.isLoadingTaramaDetail && model.isLoadingExamReport && model.taramaDetail == nil && model.examReport == nil {
                 ProgressView("Tarama detayları yükleniyor...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = model.taramaDetailError, model.taramaDetail == nil {
+            } else if let report = model.examReport, model.taramaDetail == nil {
+                TaramaWebReportView(report: report, optionalDetailError: model.taramaDetailError)
+            } else if let error = model.taramaDetailError ?? model.examReportError, model.taramaDetail == nil {
                 ContentUnavailableView {
                     Label("Tarama detayları yüklenemedi.", systemImage: "exclamationmark.triangle")
                 } description: { Text(error) } actions: {
@@ -295,7 +323,11 @@ private struct TaramaDetailView: View {
             }
         }
         .navigationTitle("Tarama Detayı")
-        .task(id: exam.examCode) { await model.loadTaramaDetail(examCode: exam.examCode) }
+        .task(id: exam.examCode) {
+            async let web: Void = model.loadExamReport(examId: exam.examCode, examType: exam.examType)
+            async let mobile: Void = model.loadTaramaDetail(examCode: exam.examCode)
+            _ = await (web, mobile)
+        }
         .onChange(of: section) { _, newValue in
             guard newValue == .analysis else { return }
             Task { await model.loadTaramaSubjectAnalysis(examCode: exam.examCode) }
@@ -308,6 +340,51 @@ private struct TaramaDetailView: View {
         case .results: TaramaResultsView(detail: detail)
         case .answers: TaramaAnswersView(detail: detail)
         case .analysis: TaramaAnalysisView(model: model, examCode: exam.examCode)
+        }
+    }
+}
+
+private struct TaramaWebReportView: View {
+    let report: ExamSchoolReport
+    let optionalDetailError: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let optionalDetailError {
+                    Label("Web sınav raporu gösteriliyor. Mobil DBS ayrıntıları kullanılamıyor: \(optionalDetailError)", systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Ders Sonuçları").font(.title3.weight(.semibold))
+                ForEach(report.subjectResults()) { subject in
+                    Grid(alignment: .leading) {
+                        GridRow { Text(subject.lesson).font(.headline).gridCellColumns(5) }
+                        GridRow {
+                            LabeledContent("Soru", value: "\(subject.questionCount)")
+                            LabeledContent("Doğru", value: "\(subject.correct)")
+                            LabeledContent("Yanlış", value: "\(subject.wrong)")
+                            LabeledContent("Boş", value: "\(subject.blank)")
+                            LabeledContent("Net", value: subject.net.formatted(.number.precision(.fractionLength(0...2))))
+                        }
+                    }
+                }
+                if let subanal = report.subanal {
+                    Text("Kazanım Analizi").font(.title3.weight(.semibold))
+                    ForEach(flatten(subanal), id: \.self) { Text($0).fixedSize(horizontal: false, vertical: true) }
+                }
+            }.padding(20).frame(maxWidth: 900, alignment: .leading)
+        }
+    }
+
+    private func flatten(_ value: JSONValue, prefix: String = "") -> [String] {
+        switch value {
+        case .array(let values): return values.flatMap { flatten($0, prefix: prefix) }
+        case .object(let values):
+            return values.sorted(by: { $0.key < $1.key }).flatMap { flatten($0.value, prefix: prefix.isEmpty ? $0.key : "\(prefix) · \($0.key)") }
+        case .string(let text): return [prefix.isEmpty ? text : "\(prefix): \(text)"]
+        case .number(let number): return ["\(prefix): \(number.formatted())"]
+        case .bool(let flag): return ["\(prefix): \(flag ? "Evet" : "Hayır")"]
+        case .null: return []
         }
     }
 }
@@ -456,7 +533,7 @@ private struct TaramaAnalysisView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(groupedAnalysis, id: \.lesson) { group in
+                        ForEach(groupedAnalysis) { group in
                             VStack(alignment: .leading, spacing: 7) {
                                 Text(group.lesson).font(.title3.weight(.semibold))
                                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
@@ -480,13 +557,8 @@ private struct TaramaAnalysisView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var groupedAnalysis: [(lesson: String, entries: [TaramaSubjectAnalysis])] {
-        var result: [(String, [TaramaSubjectAnalysis])] = []
-        for item in model.taramaSubjectAnalysis {
-            if result.last?.0 == item.lesson { result[result.count - 1].1.append(item) }
-            else { result.append((item.lesson, [item])) }
-        }
-        return result
+    private var groupedAnalysis: [TaramaAnalysisGroup] {
+        TaramaAnalysisGrouping.group(model.taramaSubjectAnalysis)
     }
 
     private func value(_ number: Double?) -> Text {

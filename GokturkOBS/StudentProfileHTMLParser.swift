@@ -13,21 +13,20 @@ struct StudentProfileHTMLParser {
             .matches(in: html, range: NSRange(location: 0, length: source.length)) ?? []
         print("[Profile Parser] <dl> block count: \(listMatches.count)")
 
-        let studentValues = listMatches
-            .lazy
-            .compactMap { match -> [String: String]? in
+        let allValues = listMatches.compactMap { match -> [String: String]? in
                 guard match.numberOfRanges == 2 else {
                     return nil
                 }
-                let values = fieldValues(in: source.substring(with: match.range(at: 1)))
-                guard values["Öğrenci Numara"] != nil,
-                      values["Sınıf Kodu"] != nil,
-                      values["İsim Soyisim"] != nil else {
-                    return nil
-                }
-                return values
+                return fieldValues(in: source.substring(with: match.range(at: 1)))
             }
-            .first
+        let studentValues = allValues.first { values in
+            values["Öğrenci Numara"] != nil &&
+                values["Sınıf Kodu"] != nil &&
+                values["İsim Soyisim"] != nil
+        }
+        let parentName = allValues.first { values in
+            values["İsim Soyisim"] != nil && values["Öğrenci Numara"] == nil && values["Sınıf Kodu"] == nil
+        }?["İsim Soyisim"]
 
         // Eski veya eksik HTML varyantlarında ilk alanı koruyarak güvenli bir fallback sağla.
         let values = studentValues ?? fieldValues(in: html)
@@ -43,7 +42,8 @@ struct StudentProfileHTMLParser {
             stuNo: stuNo,
             classId: classId,
             name: name,
-            photoURL: photoURL(from: html, source: source, profilePageURL: profilePageURL)
+            photoURL: photoURL(from: html, source: source, profilePageURL: profilePageURL),
+            parentName: parentName
         )
     }
 

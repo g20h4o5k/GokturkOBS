@@ -97,7 +97,8 @@ enum ScheduleDaySelection {
         }
 
         let precedingDayCount = visibleDayCount >= 3 ? 1 : 0
-        return (focusIndex - precedingDayCount + days.count) % days.count
+        let maximumStart = max(days.count - visibleDayCount, 0)
+        return min(max(focusIndex - precedingDayCount, 0), maximumStart)
     }
 
     static func pairStart(containing index: Int, count: Int) -> Int {
@@ -201,7 +202,9 @@ struct ScheduleView: View {
                         days: compactDays,
                         startIndex: preferredCompactStartIndex(visibleDayCount: visibleDayCount),
                         visibleDayCount: visibleDayCount,
-                        movePair: moveCompactPair
+                        movePair: { offset in
+                            moveCompactPair(by: offset, visibleDayCount: visibleDayCount)
+                        }
                     )
                     .onAppear {
                         initializeCompactSelectionIfNeeded(visibleDayCount: visibleDayCount)
@@ -255,10 +258,11 @@ struct ScheduleView: View {
         compactStartIndex = automaticStartIndex(visibleDayCount: visibleDayCount)
     }
 
-    private func moveCompactPair(by offset: Int) {
+    private func moveCompactPair(by offset: Int, visibleDayCount: Int) {
         guard !compactDays.isEmpty else { return }
         let currentIndex = compactStartIndex ?? 0
-        compactStartIndex = (currentIndex + offset + compactDays.count) % compactDays.count
+        let maximumStart = max(compactDays.count - visibleDayCount, 0)
+        compactStartIndex = min(max(currentIndex + offset, 0), maximumStart)
         userSelectedDays = true
     }
 }
@@ -360,10 +364,9 @@ private struct CompactScheduleView: View {
 
     private var visibleDays: [ScheduleDay] {
         guard !days.isEmpty else { return [] }
-        let safeStart = min(max(startIndex, 0), days.count - 1)
-        return (0..<min(visibleDayCount, days.count)).map { offset in
-            days[(safeStart + offset) % days.count]
-        }
+        let count = min(visibleDayCount, days.count)
+        let safeStart = min(max(startIndex, 0), max(days.count - count, 0))
+        return Array(days[safeStart..<(safeStart + count)])
     }
 
     var body: some View {
@@ -372,8 +375,8 @@ private struct CompactScheduleView: View {
                 ScheduleHeader(periodDescription: schedule.periodList.first?.description)
                 CompactDayNavigation(
                     days: visibleDays,
-                    canMovePrevious: days.count > visibleDayCount,
-                    canMoveNext: days.count > visibleDayCount,
+                    canMovePrevious: startIndex > 0,
+                    canMoveNext: startIndex + visibleDays.count < days.count,
                     movePair: movePair
                 )
                 ScheduleGrid(schedule: schedule, days: visibleDays, dayColumnWidth: nil)

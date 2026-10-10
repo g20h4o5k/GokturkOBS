@@ -8,7 +8,7 @@ struct FoodListResponse: Decodable {
 enum FoodListLoadState {
     case idle
     case loading
-    case loaded(PDFDocument)
+    case loaded(PDFDocument, [FoodMenuDay])
     case empty
     case error(String)
 }
@@ -243,9 +243,8 @@ private struct FoodListContent: View {
         case .idle, .loading:
             ProgressView("Yemek listesi yükleniyor…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .loaded(let document):
-            PDFKitView(document: document)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .loaded(let document, let days):
+            ParsedFoodMenuView(document: document, days: days)
         case .empty:
             ContentUnavailableView(
                 "Yemek listesi bulunamadı",
@@ -264,7 +263,7 @@ private struct FoodListContent: View {
     }
 }
 
-private struct PDFKitView: NSViewRepresentable {
+struct PDFKitView: NSViewRepresentable {
     let document: PDFDocument
 
     func makeNSView(context: Context) -> PDFView {
@@ -280,6 +279,40 @@ private struct PDFKitView: NSViewRepresentable {
         if pdfView.document !== document {
             pdfView.document = document
             pdfView.autoScales = true
+        }
+    }
+}
+
+private struct ParsedFoodMenuView: View {
+    let document: PDFDocument
+    let days: [FoodMenuDay]
+    @State private var selectedID: FoodMenuDay.ID?
+    @State private var showsPDF = false
+
+    var body: some View {
+        if days.isEmpty {
+            VStack(spacing: 12) {
+                ContentUnavailableView("Menü otomatik ayrıştırılamadı", systemImage: "doc.text.magnifyingglass", description: Text("Yanlış bilgi göstermemek için orijinal PDF'yi açabilirsiniz."))
+                Button("Orijinal PDF") { showsPDF = true }
+            }
+            .sheet(isPresented: $showsPDF) { PDFKitView(document: document).frame(minWidth: 760, minHeight: 620) }
+        } else {
+            VStack(spacing: 0) {
+                HStack {
+                    Picker("Gün", selection: $selectedID) {
+                        ForEach(days) { Text($0.heading).tag(Optional($0.id)) }
+                    }.labelsHidden()
+                    Spacer()
+                    Button("Orijinal PDF") { showsPDF = true }
+                }.padding()
+                Divider()
+                if let day = days.first(where: { $0.id == selectedID }) ?? days.first {
+                    List(day.items, id: \.self) { Label($0, systemImage: "fork.knife") }
+                        .navigationTitle(day.heading)
+                }
+            }
+            .onAppear { if selectedID == nil { selectedID = days.first?.id } }
+            .sheet(isPresented: $showsPDF) { PDFKitView(document: document).frame(minWidth: 760, minHeight: 620) }
         }
     }
 }

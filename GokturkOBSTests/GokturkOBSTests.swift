@@ -54,6 +54,45 @@ struct TaramaDecodingTests {
 
         #expect(response.data?.first?.performance == 0.75)
     }
+
+    @Test
+    func subjectAnalysisGroupsNonAdjacentLessonsWithoutDroppingEntries() throws {
+        let data = Data(#"{"success":true,"data":[{"lesson":"Matematik","konuAd":"Oran"},{"lesson":"Türkçe","konuAd":"Fiil"},{"lesson":"Matematik","konuAd":"Geometri"}]}"#.utf8)
+        let response = try JSONDecoder().decode(TaramaSubjectAnalysisResponse.self, from: data)
+        let groups = TaramaAnalysisGrouping.group(response.data ?? [])
+
+        #expect(groups.map(\.lesson) == ["Matematik", "Türkçe"])
+        #expect(groups.first?.entries.map(\.topic) == ["Oran", "Geometri"])
+    }
+
+    @Test
+    func webExamRecordKeepsServerExamType() throws {
+        let data = Data(#"{"sinavKod":"17","sinavAd":"Ölçme","sinavTarih":"10.10.2026","examType":"dbs"}"#.utf8)
+        let record = try JSONDecoder().decode(WebExamRecord.self, from: data)
+
+        #expect(record.examType == "DBS")
+        #expect(TaramaExam(indexRecord: record).examCode == "17")
+    }
+
+    @Test
+    func limeExamReportLessonOrderAndCommaNumbersArePreserved() throws {
+        let data = Data(#"{"success":true,"data":{"SR1":20,"D1":18,"Y1":2,"N1":"17,33","SR2":20,"D2":15,"Y2":3,"N2":"14,00","Puan":"421,5","N7":"82,25"}}"#.utf8)
+        let report = try JSONDecoder().decode(ExamSchoolReport.self, from: data)
+
+        #expect(report.subjectResults().map(\.lesson) == ["TÜRKÇE", "MATEMATİK"])
+        #expect(report.subjectResults().first?.net == 17.33)
+        #expect(report.score == 421.5)
+        #expect(report.totalNet == 82.25)
+    }
+
+    @Test
+    func zeroQuestionCountFallsBackToCorrectWrongAndBlankSum() throws {
+        let data = Data(#"{"success":true,"data":{"SR1":0,"D1":12,"Y1":3,"B1":5,"N1":11}}"#.utf8)
+        let report = try JSONDecoder().decode(ExamSchoolReport.self, from: data)
+
+        #expect(report.subjectResults().first?.questionCount == 20)
+        #expect(report.subjectResults().first?.blank == 5)
+    }
 }
 
 struct SessionRecoveryPolicyTests {

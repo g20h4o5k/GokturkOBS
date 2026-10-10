@@ -8,6 +8,7 @@ struct StudentProfile: Codable {
     let name: String
     let photoURL: URL?
     var stuType: String? = nil
+    var parentName: String? = nil
 }
 
 struct ExamDashboard: Codable {
@@ -17,6 +18,15 @@ struct ExamDashboard: Codable {
     let lessonSuccess: [ExamLessonSuccess]
     let trend: JSONValue?
     let lessons: [JSONValue]
+
+    init(exams: [StudentExam]) {
+        success = true
+        self.exams = exams
+        kpi = nil
+        lessonSuccess = []
+        trend = nil
+        lessons = []
+    }
 
     enum CodingKeys: String, CodingKey {
         case success, exams, kpi, lessonSuccess, trend, lessons
@@ -62,12 +72,13 @@ struct StudentExam: Codable, Identifiable {
     let TD: Double?
     let GD: Double?
     let SD: Double?
+    let examType: String
 
     var id: String { examId }
 
     enum CodingKeys: String, CodingKey {
         case examId, examName, examDate, point, net, dogru, yanlis, bos
-        case questionCount, successRate, TD, GD, SD
+        case questionCount, successRate, TD, GD, SD, examType
     }
 
     init(from decoder: Decoder) throws {
@@ -86,6 +97,73 @@ struct StudentExam: Codable, Identifiable {
         TD = container.decodeNumber(forKey: .TD)
         GD = container.decodeNumber(forKey: .GD)
         SD = container.decodeNumber(forKey: .SD)
+        examType = try container.decodeIfPresent(String.self, forKey: .examType) ?? "SBS"
+    }
+
+    init(indexRecord: WebExamRecord) {
+        examId = indexRecord.sinavKod
+        examName = indexRecord.sinavAd
+        examDate = indexRecord.sinavTarih ?? ""
+        point = indexRecord.point ?? 0
+        net = indexRecord.net ?? 0
+        dogru = indexRecord.correct ?? 0
+        yanlis = indexRecord.incorrect ?? 0
+        bos = indexRecord.blank ?? 0
+        questionCount = indexRecord.questionCount ?? dogru + yanlis + bos
+        successRate = indexRecord.successRate ?? 0
+        TD = nil; GD = nil; SD = nil
+        examType = indexRecord.examType
+    }
+
+    init(taramaExam: TaramaExam) {
+        examId = taramaExam.examCode
+        examName = taramaExam.name
+        examDate = taramaExam.date ?? ""
+        point = taramaExam.point ?? 0
+        net = 0
+        dogru = 0
+        yanlis = 0
+        bos = 0
+        questionCount = 0
+        successRate = 0
+        TD = nil; GD = nil; SD = nil
+        examType = taramaExam.examType
+    }
+}
+
+struct WebExamRecord: Decodable, Identifiable, Hashable {
+    let sinavKod: String
+    let sinavAd: String
+    let sinavTarih: String?
+    let examType: String
+    let point: Double?
+    let net: Double?
+    let correct: Int?
+    let incorrect: Int?
+    let blank: Int?
+    let questionCount: Int?
+    let successRate: Double?
+    var id: String { "\(examType)|\(sinavKod)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case sinavKod, sinavAd, sinavTarih, examType, point, net
+        case correct = "dogru", incorrect = "yanlis", blank = "bos", questionCount, successRate
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sinavKod = (try? values.decode(String.self, forKey: .sinavKod))
+            ?? String((try? values.decode(Int.self, forKey: .sinavKod)) ?? 0)
+        sinavAd = try values.decodeIfPresent(String.self, forKey: .sinavAd) ?? "Sınav"
+        sinavTarih = try values.decodeIfPresent(String.self, forKey: .sinavTarih)
+        examType = (try values.decodeIfPresent(String.self, forKey: .examType) ?? "").uppercased()
+        point = values.decodeNumber(forKey: .point)
+        net = values.decodeNumber(forKey: .net)
+        correct = values.decodeInteger(forKey: .correct)
+        incorrect = values.decodeInteger(forKey: .incorrect)
+        blank = values.decodeInteger(forKey: .blank)
+        questionCount = values.decodeInteger(forKey: .questionCount)
+        successRate = values.decodeNumber(forKey: .successRate)
     }
 }
 
@@ -180,7 +258,7 @@ enum JSONValue: Codable, Equatable {
     var numberValue: Double? {
         switch self {
         case .number(let value): return value
-        case .string(let value): return Double(value)
+        case .string(let value): return Double(value.replacingOccurrences(of: ",", with: "."))
         default: return nil
         }
     }
@@ -194,11 +272,11 @@ enum JSONValue: Codable, Equatable {
 struct ExamSchoolReport: Codable {
     private static let examLessons = [
         "TÜRKÇE",
-        "SOSYAL BİL.",
-        "DİN. KÜL.",
-        "Y.DİL",
         "MATEMATİK",
-        "FEN VE TEKN."
+        "SOSYAL BİL.",
+        "FEN VE TEKN.",
+        "DİN. KÜL.",
+        "Y.DİL"
     ]
 
     let success: Bool
@@ -218,23 +296,44 @@ struct ExamSchoolReport: Codable {
 
     func subjectResults() -> [ExamSubjectResult] {
         (1...6).compactMap { index in
-            let questions = data.intValue("SR\(index)") ?? 0
+            let reportedQuestions = data.intValue("SR\(index)") ?? 0
             let correct = data.intValue("D\(index)") ?? 0
             let wrong = data.intValue("Y\(index)") ?? 0
+            let reportedBlank = data.intValue("B\(index)")
+            let blank = reportedBlank ?? max(reportedQuestions - correct - wrong, 0)
+            let questions = reportedQuestions > 0 ? reportedQuestions : correct + wrong + blank
             let net = data.numberValue("N\(index)") ?? Double(correct) - Double(wrong) / 3
-            guard questions > 0 || correct > 0 || wrong > 0 || data["SC\(index)"] != nil else { return nil }
+            guard questions > 0 || correct > 0 || wrong > 0 || blank > 0 || data["SC\(index)"] != nil else { return nil }
             return ExamSubjectResult(
                 lesson: Self.examLessons[index - 1],
                 index: index,
                 questionCount: questions,
                 correct: correct,
                 wrong: wrong,
-                blank: max(questions - correct - wrong, 0),
+                blank: blank,
                 net: net,
                 questions: questionAnalysis(index: index)
             )
         }
     }
+
+    var score: Double? { data.numberValue("Puan") }
+    var totalNet: Double? { data.numberValue("N7") }
+    var totalCorrect: Int? { data.intValue("D7") }
+    var totalWrong: Int? { data.intValue("Y7") }
+    var totalQuestions: Int? {
+        let reported = data.intValue("SR7") ?? 0
+        if reported > 0 { return reported }
+        guard let correct = totalCorrect, let wrong = totalWrong else { return nil }
+        return correct + wrong + (data.intValue("B7") ?? 0)
+    }
+    var totalBlank: Int? {
+        if let blank = data.intValue("B7") { return blank }
+        guard let totalQuestions, let totalCorrect, let totalWrong else { return nil }
+        return max(totalQuestions - totalCorrect - totalWrong, 0)
+    }
+    var classRank: Int? { data.intValue("SD") }
+    var generalRank: Int? { data.intValue("GD") }
 
     func questionAnalysis(index: Int) -> [ExamQuestion] {
         let correctKey = Array(data.stringValue("SC\(index)") ?? "")
@@ -460,7 +559,7 @@ private struct ExamRow: View {
     }
 }
 
-private struct ExamDetailView: View {
+struct ExamDetailView: View {
     let exam: StudentExam
     @ObservedObject var model: AppModel
 
@@ -477,13 +576,14 @@ private struct ExamDetailView: View {
                             Text(exam.examName).font(.title2.weight(.semibold))
                             Text(exam.examDate).foregroundStyle(.secondary)
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading, spacing: 8) {
-                                ExamMetricTile(title: "Puan", value: exam.point.formatted(.number.precision(.fractionLength(2))))
-                                ExamMetricTile(title: "Net", value: exam.net.formatted(.number.precision(.fractionLength(2))))
-                                ExamMetricTile(title: "Doğru", value: "\(exam.dogru)")
-                                ExamMetricTile(title: "Yanlış", value: "\(exam.yanlis)")
-                                ExamMetricTile(title: "Boş", value: "\(exam.bos)")
-                                ExamMetricTile(title: "Soru sayısı", value: "\(exam.questionCount)")
-                                ExamMetricTile(title: "Başarı", value: "\(exam.successRate.formatted(.number.precision(.fractionLength(1))))%")
+                                ExamMetricTile(title: "Puan", value: (report.score ?? exam.point).formatted(.number.precision(.fractionLength(0...2))))
+                                ExamMetricTile(title: "Net", value: (report.totalNet ?? exam.net).formatted(.number.precision(.fractionLength(0...2))))
+                                ExamMetricTile(title: "Doğru", value: "\(report.totalCorrect ?? exam.dogru)")
+                                ExamMetricTile(title: "Yanlış", value: "\(report.totalWrong ?? exam.yanlis)")
+                                ExamMetricTile(title: "Boş", value: "\(report.totalBlank ?? exam.bos)")
+                                ExamMetricTile(title: "Soru sayısı", value: "\(report.totalQuestions ?? exam.questionCount)")
+                                if let rank = report.classRank { ExamMetricTile(title: "Sınıf derecesi", value: "\(rank)") }
+                                if let rank = report.generalRank { ExamMetricTile(title: "Genel derece", value: "\(rank)") }
                             }
                         }
 
@@ -559,7 +659,7 @@ private struct ExamDetailView: View {
         }
         .navigationTitle(exam.examName)
         .task(id: exam.id) {
-            await model.loadExamReport(examId: exam.examId)
+            await model.loadExamReport(examId: exam.examId, examType: exam.examType)
         }
     }
 }

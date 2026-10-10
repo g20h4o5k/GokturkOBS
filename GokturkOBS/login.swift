@@ -617,6 +617,22 @@ final class OBSClient {
         }
     }
 
+    func loadCompleteStudentProfile() async throws -> StudentProfile {
+        let current = try await loadStudentProfile()
+        guard current.parentName == nil else { return current }
+        guard let webProfile = try? await fetchLegacyStudentProfile() else { return current }
+        let merged = StudentProfile(
+            stuNo: current.stuNo,
+            classId: current.classId,
+            name: current.name,
+            photoURL: current.photoURL ?? webProfile.photoURL,
+            stuType: current.stuType,
+            parentName: webProfile.parentName
+        )
+        studentProfile = merged
+        return merged
+    }
+
     private func fetchLegacyStudentProfile() async throws -> StudentProfile {
         let url = baseURL.appendingPathComponent("pages/student/profile.php")
         var request = URLRequest(url: url)
@@ -762,12 +778,12 @@ final class OBSClient {
         }
     }
 
-    func loadSchoolReport(examId: String) async throws -> ExamSchoolReport {
+    func loadSchoolReport(examId: String, examType: String) async throws -> ExamSchoolReport {
         try await performRead(for: .web) { [self] in
             let profile = try await loadStudentProfile()
             let data = try await postExamDashboard(fields: [
                 ("request", "getSchoolReport"),
-                ("examType", "SBS"),
+                ("examType", examType),
                 ("examId", examId),
                 ("stuNo", profile.stuNo),
                 ("classId", profile.classId)
@@ -779,29 +795,34 @@ final class OBSClient {
     }
 
     func loadTaramalar() async throws -> [TaramaExam] {
-        try await performRead(for: .mobile) { [self] in
-            try ensureMobileSession()
-            let profile = try await loadStudentProfile()
-            guard let studentType = (mobileStudentType ?? profile.stuType)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !studentType.isEmpty else {
-                throw OBSClientError.invalidResponse("Öğrenci türü bilgisi alınamadı.")
-            }
-            let data = try await mobileGET(
-                path: "exam/getExamList",
-                queryItems: [
-                    URLQueryItem(name: "stuNo", value: profile.stuNo),
-                    URLQueryItem(name: "stuType", value: studentType)
-                ]
-            )
-            let response = try JSONDecoder().decode(TaramaListResponse.self, from: data)
-            guard response.success else {
-                throw OBSClientError.invalidResponse(response.message ?? "Tarama sonuçları alınamadı.")
-            }
-            guard let exams = response.result else {
-                throw OBSClientError.invalidResponse("Tarama listesi yanıtı geçersiz.")
-            }
-            return exams.filter { $0.examType.caseInsensitiveCompare("DBS") == .orderedSame }
+        try await performRead(for: .web) { [self] in
+            try await loadWebExamRecords()
+                .filter { $0.examType == "DBS" }
+                .map(TaramaExam.init(indexRecord:))
         }
+    }
+
+    private struct WebIndexEnvelope: Decodable {
+        struct Payload: Decodable { let examList: [WebExamRecord]? }
+        let success: Bool
+        let data: Payload
+    }
+
+    private func loadWebExamRecords() async throws -> [WebExamRecord] {
+        let url = baseURL.appendingPathComponent("pages/student/require/indexAction.php")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = Data("request=loadIndex".utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        try attachAuthenticatedSession(to: &request)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OBSClientError.serverError }
+        try validateHTTPResponse(http)
+        let envelope = try JSONDecoder().decode(WebIndexEnvelope.self, from: data)
+        guard envelope.success else { throw OBSClientError.invalidResponse("Sınav listesi alınamadı.") }
+        var seen = Set<String>()
+        return (envelope.data.examList ?? []).filter { seen.insert($0.id).inserted }
     }
 
     func loadTaramaDetail(examCode: String) async throws -> TaramaDetail {
@@ -866,7 +887,7 @@ final class OBSClient {
     }
 
     private func postExamDashboard(fields: [(String, String)]) async throws -> Data {
-        let url = URL(string: "https://www.tedemkolejiobs.com/pages/student/require/examDashboard.php")!
+        let url = baseURL.appendingPathComponent("pages/student/require/examDashboard.php")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         let boundary = "Boundary-\(UUID().uuidString)"

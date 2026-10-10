@@ -180,12 +180,9 @@ extension OBSClient {
     private func homeworkData(from url: URL, verboseLogging: Bool) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-
-        guard let cookies = currentCookieHeader,
-              !cookies.isEmpty else {
+        guard let cookies = currentCookieHeader, !cookies.isEmpty else {
             throw OBSClientError.sessionExpired
         }
-
         request.setValue(cookies, forHTTPHeaderField: "Cookie")
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
 
@@ -203,56 +200,42 @@ extension OBSClient {
             print("[OBS VERBOSE] Outgoing query: keys=[\(queryNames)] values=<redacted>")
             print("[OBS VERBOSE] Outgoing headers: X-Requested-With=XMLHttpRequest, Cookie names=[\(cookieNames)] values=<redacted>")
         }
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            if verboseLogging {
-                print("[OBS VERBOSE] Request failed: path=\(url.path) errorType=\(String(describing: type(of: error))) description=\(error.localizedDescription)")
-            }
-            throw error
-        }
 
-        guard let http = response as? HTTPURLResponse,
-              200..<300 ~= http.statusCode else {
-            let statusCode = (response as? HTTPURLResponse)?.statusCode
-            if verboseLogging {
-                print("[OBS VERBOSE] Incoming response rejected: status=\(statusCode.map(String.init) ?? "non-HTTP") bytes=\(data.count)")
-            }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
             throw OBSClientError.serverError
+        }
+        try validateHTTPResponse(http)
+        if String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "Access denied." {
+            throw OBSClientError.sessionExpired
         }
 
         if verboseLogging {
-            print("[OBS VERBOSE] Incoming response: status=\(http.statusCode) mime=\(http.mimeType ?? "unknown") bytes=\(data.count) finalPath=\(http.url?.path ?? url.path)")
+            print("[OBS VERBOSE] Incoming response: status=\(http.statusCode) mime=\(http.mimeType ?? "unknown") bytes=\(data.count)")
         }
         return data
     }
 
     func loadHomework() async throws -> [Homework] {
-        let url = URL(string: "https://www.tedemkolejiobs.com/obsapi/homework/getHomeworkList")!
-        let data = try await homeworkData(from: url, verboseLogging: false)
-        let result = try JSONDecoder().decode(HomeworkResponse.self, from: data)
-
-        guard result.success else {
-            throw OBSClientError.serverError
+        try await performRead(for: .web) { [self] in
+            let url = URL(string: "https://www.tedemkolejiobs.com/obsapi/homework/getHomeworkList")!
+            let data = try await homeworkData(from: url, verboseLogging: false)
+            let result = try JSONDecoder().decode(HomeworkResponse.self, from: data)
+            guard result.success else { throw OBSClientError.serverError }
+            return result.data
         }
-
-        return result.data
     }
 
     func loadHomeworkDetail(id: Int) async throws -> HomeworkDetail {
-        var components = URLComponents(string: "https://www.tedemkolejiobs.com/obsapi/homework/getHomeworkDetail")!
-        components.queryItems = [URLQueryItem(name: "id", value: String(id))]
-        let data = try await homeworkData(from: components.url!, verboseLogging: true)
-        let result = try JSONDecoder().decode(HomeworkDetailResponse.self, from: data)
-        print("[OBS VERBOSE] Homework detail decoded: success=\(result.success) id=<redacted> attachments=\(result.data.attachFiles.count) answerFiles=\(result.data.answerFiles.count) studentFiles=\(result.data.studentAttachFiles.count)")
-
-        guard result.success else {
-            throw OBSClientError.serverError
+        try await performRead(for: .web) { [self] in
+            var components = URLComponents(string: "https://www.tedemkolejiobs.com/obsapi/homework/getHomeworkDetail")!
+            components.queryItems = [URLQueryItem(name: "id", value: String(id))]
+            let data = try await homeworkData(from: components.url!, verboseLogging: true)
+            let result = try JSONDecoder().decode(HomeworkDetailResponse.self, from: data)
+            guard result.success else { throw OBSClientError.serverError }
+            return result.data
         }
-
-        return result.data
     }
 
     func downloadHomeworkFile(_ file: HomeworkFile) async throws -> Data {
@@ -266,6 +249,15 @@ extension OBSClient {
             throw OBSClientError.invalidResponse("Dosya indirme adresi oluşturulamadı.")
         }
 
-        return try await homeworkData(from: url, verboseLogging: true)
+        return try await performRead(for: .web) { [self] in
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            guard let cookies = currentCookieHeader, !cookies.isEmpty else { throw OBSClientError.sessionExpired }
+            request.setValue(cookies, forHTTPHeaderField: "Cookie")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw OBSClientError.serverError }
+            try validateHTTPResponse(http)
+            return data
+        }
     }
 }

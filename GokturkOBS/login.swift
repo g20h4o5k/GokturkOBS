@@ -119,18 +119,27 @@ private extension KeyedDecodingContainer {
 
 enum OBSClientError: LocalizedError {
     case serverError
+    case temporaryServer(statusCode: Int, retryAfter: TimeInterval?)
     case loginFailed(String)
     case sessionExpired
+    case recoveryUnavailable
     case invalidResponse(String)
 
     var errorDescription: String? {
         switch self {
         case .serverError: return "OBS sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin."
+        case .temporaryServer: return "OBS sunucusuna ulaşılamıyor."
         case .loginFailed(let message): return message
         case .sessionExpired: return "OBS oturumu geçersiz."
+        case .recoveryUnavailable: return "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
         case .invalidResponse(let message): return message
         }
     }
+}
+
+enum OBSSessionKind {
+    case web
+    case mobile
 }
 
 @MainActor
@@ -139,6 +148,10 @@ final class OBSClient {
     private(set) var studentProfile: StudentProfile?
     private var cachedStudentProfileImage: NSImage?
     private var studentProfileTask: Task<StudentProfile, Error>?
+    private var mobileAuthenticated = false
+    private var credentialProvider: (() throws -> StoredCredentials?)?
+    private var webRecovery: (id: UUID, task: Task<Void, Error>)?
+    private var mobileRecovery: (id: UUID, task: Task<Void, Error>)?
 
     private func verbose(_ message: String) { print("[OBS DEBUG] \(message)") }
 
@@ -156,26 +169,53 @@ final class OBSClient {
         return URLSession(configuration: configuration)
     }()
 
+    func configureRecovery(credentialProvider: @escaping () throws -> StoredCredentials?) {
+        self.credentialProvider = credentialProvider
+    }
+
+    func disableRecovery() {
+        credentialProvider = nil
+        webRecovery?.task.cancel()
+        mobileRecovery?.task.cancel()
+        webRecovery = nil
+        mobileRecovery = nil
+    }
+
     private func cookieFileURL() -> URL {
         let fileManager = FileManager.default
-        let project = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Downloads")
-            .appendingPathComponent("GokturkOBS")
-        if !fileManager.fileExists(atPath: project.path) {
-            try? fileManager.createDirectory(at: project, withIntermediateDirectories: true)
-        }
-        return project.appendingPathComponent("obs-cookies.txt")
+        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let directory = applicationSupport
+            .appendingPathComponent("GokturkOBS", isDirectory: true)
+            .appendingPathComponent("Session", isDirectory: true)
+        try? fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        return directory.appendingPathComponent("obs-cookies.txt")
+    }
+
+    private func legacyCookieFileURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Downloads", isDirectory: true)
+            .appendingPathComponent("GokturkOBS", isDirectory: true)
+            .appendingPathComponent("obs-cookies.txt")
     }
 
     func clearCookies() throws {
         currentCookieHeader = nil
         studentProfile = nil
         cachedStudentProfileImage = nil
+        mobileAuthenticated = false
         studentProfileTask?.cancel()
         studentProfileTask = nil
         let url = cookieFileURL()
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
+        }
+        let legacyURL = legacyCookieFileURL()
+        if FileManager.default.fileExists(atPath: legacyURL.path) {
+            try FileManager.default.removeItem(at: legacyURL)
         }
     }
 
@@ -218,12 +258,21 @@ final class OBSClient {
             guard pieces.count == 2 else { continue }
             output += "tedemkolejiobs.com\tFALSE\t/\tFALSE\t0\t\(pieces[0])\t\(pieces[1])\n"
         }
-        try? output.write(to: cookieFileURL(), atomically: true, encoding: .utf8)
+        let url = cookieFileURL()
+        try? output.write(to: url, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         verbose("Session cookies saved")
     }
 
     func loadCookies() -> Bool {
         let url = cookieFileURL()
+        let legacyURL = legacyCookieFileURL()
+        if !FileManager.default.fileExists(atPath: url.path),
+           FileManager.default.fileExists(atPath: legacyURL.path),
+           (try? FileManager.default.copyItem(at: legacyURL, to: url)) != nil {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try? FileManager.default.removeItem(at: legacyURL)
+        }
         verbose("Checking saved session")
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
             verbose("Saved session unavailable")
@@ -247,6 +296,16 @@ final class OBSClient {
     }
 
     func login(username: String, password: String) async throws {
+        disableActiveRecoveries()
+        try await loginWeb(username: username, password: password)
+        do {
+            try await refreshMobileProfile(username: username, password: password)
+        } catch {
+            verbose("[Mobile Login] Profile unavailable; PHP session remains authenticated")
+        }
+    }
+
+    private func loginWeb(username: String, password: String) async throws {
         verbose("Starting login")
         currentCookieHeader = nil
         studentProfile = nil
@@ -302,11 +361,6 @@ final class OBSClient {
         guard currentCookieHeader != nil else {
             throw OBSClientError.invalidResponse("Giriş başarılı fakat sunucu oturum çerezi göndermedi.")
         }
-        do {
-            try await refreshMobileProfile(username: username, password: password)
-        } catch {
-            verbose("[Mobile Login] Profile unavailable; PHP session remains authenticated")
-        }
         saveCookies()
     }
 
@@ -336,6 +390,7 @@ final class OBSClient {
         guard result.success else {
             throw OBSClientError.loginFailed(result.msg ?? result.status ?? "Mobil OBS girişi başarısız.")
         }
+        mobileAuthenticated = true
         guard let info,
               let stuNo = info.stuNo?.trimmingCharacters(in: .whitespacesAndNewlines), !stuNo.isEmpty,
               let classId = info.classId?.trimmingCharacters(in: .whitespacesAndNewlines), !classId.isEmpty,
@@ -355,6 +410,12 @@ final class OBSClient {
     }
 
     func loadIndex() async throws -> LessonSchedule {
+        try await performRead(for: .web) { [self] in
+            try await loadIndexOnce()
+        }
+    }
+
+    private func loadIndexOnce() async throws -> LessonSchedule {
         let url = baseURL.appendingPathComponent("pages/student/require/indexAction.php")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -369,7 +430,7 @@ final class OBSClient {
             throw OBSClientError.serverError
         }
         let raw = String(data: data, encoding: .utf8) ?? "<non-UTF8 response>"
-        guard 200..<300 ~= http.statusCode else { throw OBSClientError.serverError }
+        try validateHTTPResponse(http)
         if raw.trimmingCharacters(in: .whitespacesAndNewlines) == "Access denied." {
             throw OBSClientError.sessionExpired
         }
@@ -380,6 +441,145 @@ final class OBSClient {
         } catch {
             throw error
         }
+    }
+
+    func performRead<T>(
+        for sessionKind: OBSSessionKind,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        var transientRetryCount = 0
+        var recoveredSession = false
+
+        while true {
+            try Task.checkCancellation()
+            do {
+                return try await operation()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch OBSClientError.sessionExpired where !recoveredSession {
+                recoveredSession = true
+                try await recover(sessionKind)
+            } catch {
+                guard transientRetryCount < 3, let delay = retryDelay(for: error, retryNumber: transientRetryCount) else {
+                    throw error
+                }
+                transientRetryCount += 1
+                try await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    func validateHTTPResponse(_ response: HTTPURLResponse) throws {
+        guard 200..<300 ~= response.statusCode else {
+            if response.statusCode == 401 || response.statusCode == 403 {
+                throw OBSClientError.sessionExpired
+            }
+            if [429, 502, 503, 504].contains(response.statusCode) {
+                throw OBSClientError.temporaryServer(
+                    statusCode: response.statusCode,
+                    retryAfter: boundedRetryAfter(response.value(forHTTPHeaderField: "Retry-After"))
+                )
+            }
+            throw OBSClientError.serverError
+        }
+    }
+
+    func mobileResponseIndicatesExpiredSession(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["success"] as? Bool) == false else { return false }
+        let message = [object["msg"], object["status"], object["message"]]
+            .compactMap { $0 as? String }
+            .joined(separator: " ")
+            .lowercased()
+        return ["session", "oturum", "login", "giriş", "unauthorized", "access denied"]
+            .contains { message.contains($0) }
+    }
+
+    func ensureMobileSession() throws {
+        guard mobileAuthenticated else { throw OBSClientError.sessionExpired }
+    }
+
+    func mobileData(for request: URLRequest) async throws -> Data {
+        try ensureMobileSession()
+        let (data, response) = try await mobileSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OBSClientError.serverError }
+        try validateHTTPResponse(http)
+        if mobileResponseIndicatesExpiredSession(data) {
+            mobileAuthenticated = false
+            throw OBSClientError.sessionExpired
+        }
+        return data
+    }
+
+    private func recover(_ kind: OBSSessionKind) async throws {
+        switch kind {
+        case .web:
+            if let webRecovery { return try await webRecovery.task.value }
+        case .mobile:
+            if let mobileRecovery { return try await mobileRecovery.task.value }
+        }
+
+        guard let credentials = try credentialProvider?() else {
+            throw OBSClientError.recoveryUnavailable
+        }
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { throw OBSClientError.recoveryUnavailable }
+            switch kind {
+            case .web:
+                try await self.loginWeb(username: credentials.username, password: credentials.password)
+            case .mobile:
+                try await self.refreshMobileProfile(username: credentials.username, password: credentials.password)
+            }
+        }
+        switch kind {
+        case .web: webRecovery = (id, task)
+        case .mobile: mobileRecovery = (id, task)
+        }
+        do {
+            try await task.value
+            clearRecovery(kind, id: id)
+        } catch {
+            clearRecovery(kind, id: id)
+            throw error
+        }
+    }
+
+    private func clearRecovery(_ kind: OBSSessionKind, id: UUID) {
+        switch kind {
+        case .web where webRecovery?.id == id: webRecovery = nil
+        case .mobile where mobileRecovery?.id == id: mobileRecovery = nil
+        default: break
+        }
+    }
+
+    private func disableActiveRecoveries() {
+        webRecovery?.task.cancel()
+        mobileRecovery?.task.cancel()
+        webRecovery = nil
+        mobileRecovery = nil
+    }
+
+    private func retryDelay(for error: Error, retryNumber: Int) -> TimeInterval? {
+        if case OBSClientError.temporaryServer(_, let retryAfter) = error {
+            return retryAfter ?? pow(2, Double(retryNumber + 1))
+        }
+        guard let urlError = error as? URLError,
+              [.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+               .dnsLookupFailed, .notConnectedToInternet, .resourceUnavailable]
+                .contains(urlError.code) else { return nil }
+        return pow(2, Double(retryNumber + 1))
+    }
+
+    private func boundedRetryAfter(_ value: String?) -> TimeInterval? {
+        guard let value else { return nil }
+        if let seconds = TimeInterval(value) { return min(max(seconds, 1), 60) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        guard let date = formatter.date(from: value) else { return nil }
+        return min(max(date.timeIntervalSinceNow, 1), 60)
     }
 
     func loadStudentProfile() async throws -> StudentProfile {
@@ -541,30 +741,34 @@ final class OBSClient {
     }
 
     func loadStudentExams() async throws -> ExamDashboard {
-        let profile = try await loadStudentProfile()
-        let data = try await postExamDashboard(fields: [
-            ("request", "getStudentExams"),
-            ("stuNo", profile.stuNo),
-            ("classId", profile.classId),
-            ("stuType", "SBS")
-        ])
-        let result = try JSONDecoder().decode(ExamDashboard.self, from: data)
-        guard result.success else { throw OBSClientError.serverError }
-        return result
+        try await performRead(for: .web) { [self] in
+            let profile = try await loadStudentProfile()
+            let data = try await postExamDashboard(fields: [
+                ("request", "getStudentExams"),
+                ("stuNo", profile.stuNo),
+                ("classId", profile.classId),
+                ("stuType", "SBS")
+            ])
+            let result = try JSONDecoder().decode(ExamDashboard.self, from: data)
+            guard result.success else { throw OBSClientError.serverError }
+            return result
+        }
     }
 
     func loadSchoolReport(examId: String) async throws -> ExamSchoolReport {
-        let profile = try await loadStudentProfile()
-        let data = try await postExamDashboard(fields: [
-            ("request", "getSchoolReport"),
-            ("examType", "SBS"),
-            ("examId", examId),
-            ("stuNo", profile.stuNo),
-            ("classId", profile.classId)
-        ])
-        let result = try JSONDecoder().decode(ExamSchoolReport.self, from: data)
-        guard result.success else { throw OBSClientError.serverError }
-        return result
+        try await performRead(for: .web) { [self] in
+            let profile = try await loadStudentProfile()
+            let data = try await postExamDashboard(fields: [
+                ("request", "getSchoolReport"),
+                ("examType", "SBS"),
+                ("examId", examId),
+                ("stuNo", profile.stuNo),
+                ("classId", profile.classId)
+            ])
+            let result = try JSONDecoder().decode(ExamSchoolReport.self, from: data)
+            guard result.success else { throw OBSClientError.serverError }
+            return result
+        }
     }
 
     private func postExamDashboard(fields: [(String, String)]) async throws -> Data {
@@ -589,8 +793,10 @@ final class OBSClient {
         request.httpBody = body
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            throw OBSClientError.serverError
+        guard let http = response as? HTTPURLResponse else { throw OBSClientError.serverError }
+        try validateHTTPResponse(http)
+        if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "Access denied." {
+            throw OBSClientError.sessionExpired
         }
         return data
     }

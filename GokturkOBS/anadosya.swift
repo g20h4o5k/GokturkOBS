@@ -30,7 +30,11 @@ final class AppModel: ObservableObject {
     @Published var rememberMe = UserDefaults.standard.bool(forKey: "rememberMe") {
         didSet {
             UserDefaults.standard.set(rememberMe, forKey: "rememberMe")
-            guard !rememberMe else { return }
+            if rememberMe {
+                configureAutomaticRecovery()
+                return
+            }
+            client.disableRecovery()
             do {
                 try keychain.delete()
             } catch {
@@ -47,12 +51,28 @@ final class AppModel: ObservableObject {
     private var hasStarted = false
     private var attemptedRememberedLogin = false
 
+    init() {
+        configureAutomaticRecovery()
+    }
+
+    private func configureAutomaticRecovery() {
+        guard !UserDefaults.standard.bool(forKey: "didManuallyLogout") else {
+            client.disableRecovery()
+            return
+        }
+        client.configureRecovery { [weak self] in
+            guard let self, self.rememberMe else { return nil }
+            return try self.keychain.load()
+        }
+    }
+
     func start() async {
         guard !hasStarted else {
             isLoading = false
             return
         }
         hasStarted = true
+        configureAutomaticRecovery()
         isLoading = true
         error = nil
         if client.loadCookies() {
@@ -108,6 +128,8 @@ final class AppModel: ObservableObject {
             }
             password = ""
             authenticated = true
+            UserDefaults.standard.set(false, forKey: "didManuallyLogout")
+            configureAutomaticRecovery()
             await refresh()
             if let credentialError {
                 error = credentialError
@@ -142,17 +164,28 @@ final class AppModel: ObservableObject {
             await refresh()
         } catch {
             authenticated = false
-            do {
-                try client.clearCookies()
-            } catch {
-                self.error = error.localizedDescription
-                return
+            if case OBSClientError.loginFailed = error {
+                do {
+                    try client.clearCookies()
+                } catch {
+                    self.error = error.localizedDescription
+                    return
+                }
             }
             self.error = networkErrorMessage(for: error)
         }
     }
 
     private func networkErrorMessage(for error: Error) -> String {
+        if case OBSClientError.recoveryUnavailable = error {
+            return "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
+        }
+        if case OBSClientError.loginFailed = error {
+            return "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
+        }
+        if case OBSClientError.temporaryServer = error {
+            return "OBS sunucusuna ulaşılamıyor."
+        }
         if let clientError = error as? OBSClientError, case .serverError = clientError {
             return "OBS sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin."
         }
@@ -169,6 +202,11 @@ final class AppModel: ObservableObject {
         do {
             schedule = try await client.loadIndex()
         } catch {
+            if requiresExplicitLogin(after: error) {
+                authenticated = false
+                self.error = "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
+                return
+            }
             failures.append("Ders programı alınamadı.")
         }
 
@@ -181,10 +219,25 @@ final class AppModel: ObservableObject {
         do {
             examDashboard = try await client.loadStudentExams()
         } catch {
+            if requiresExplicitLogin(after: error) {
+                authenticated = false
+                self.error = "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
+                return
+            }
             failures.append("Sınavlar alınamadı.")
         }
 
         error = failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
+
+    private func requiresExplicitLogin(after error: Error) -> Bool {
+        guard let clientError = error as? OBSClientError else { return false }
+        switch clientError {
+        case .sessionExpired, .recoveryUnavailable, .loginFailed:
+            return true
+        case .serverError, .temporaryServer, .invalidResponse:
+            return false
+        }
     }
 
     func loadHomeworkDetail(id: Int) async {
@@ -335,6 +388,8 @@ final class AppModel: ObservableObject {
     }
 
     func logout() {
+        UserDefaults.standard.set(true, forKey: "didManuallyLogout")
+        client.disableRecovery()
         authenticated = false
         error = nil
         do {

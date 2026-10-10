@@ -21,26 +21,9 @@ enum FoodListResult {
 extension OBSClient {
     func loadFoodList() async throws -> FoodListResult {
         do {
-            let hash = try await loadFoodListHash()
-            guard !hash.isEmpty else {
-                return .empty
+            return try await performRead(for: .web) { [self] in
+                try await loadFoodListOnce()
             }
-
-            if let cachedData = try cachedFoodListData(for: hash),
-               PDFDocument(data: cachedData) != nil {
-                return .pdf(cachedData)
-            }
-
-            let data = try await downloadFoodListPDF(hash: hash)
-            guard !data.isEmpty else {
-                throw OBSClientError.invalidResponse("Yemek listesi PDF dosyası boş.")
-            }
-            guard PDFDocument(data: data) != nil else {
-                throw OBSClientError.invalidResponse("Yemek listesi geçerli bir PDF dosyası değil.")
-            }
-
-            try cacheFoodList(data, hash: hash)
-            return .pdf(data)
         } catch {
             if let cachedData = try? latestCachedFoodListData(),
                PDFDocument(data: cachedData) != nil {
@@ -48,6 +31,29 @@ extension OBSClient {
             }
             throw error
         }
+    }
+
+    private func loadFoodListOnce() async throws -> FoodListResult {
+        let hash = try await loadFoodListHash()
+        guard !hash.isEmpty else {
+            return .empty
+        }
+
+        if let cachedData = try cachedFoodListData(for: hash),
+           PDFDocument(data: cachedData) != nil {
+            return .pdf(cachedData)
+        }
+
+        let data = try await downloadFoodListPDF(hash: hash)
+        guard !data.isEmpty else {
+            throw OBSClientError.invalidResponse("Yemek listesi PDF dosyası boş.")
+        }
+        guard PDFDocument(data: data) != nil else {
+            throw OBSClientError.invalidResponse("Yemek listesi geçerli bir PDF dosyası değil.")
+        }
+
+        try cacheFoodList(data, hash: hash)
+        return .pdf(data)
     }
 
     private func loadFoodListHash() async throws -> String {
@@ -126,9 +132,7 @@ extension OBSClient {
         guard let http = response as? HTTPURLResponse else {
             throw OBSClientError.serverError
         }
-        guard 200..<300 ~= http.statusCode else {
-            throw OBSClientError.serverError
-        }
+        try validateHTTPResponse(http)
         if String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) == "Access denied." {
             throw OBSClientError.sessionExpired

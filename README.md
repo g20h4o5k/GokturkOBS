@@ -33,3 +33,9 @@ Proje şu anda kişisel kullanım ve geliştirme amacıyla oluşturulmaktadır.
 ## Lisans
 
 GPL-3.0
+
+
+
+
+
+nativepowah

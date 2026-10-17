@@ -1,0 +1,48 @@
+name: Build GokturkOBS (unsigned)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build unsigned macOS app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project GokturkOBS.xcodeproj \
+            -scheme GokturkOBS \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/GokturkOBS-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package application
+        run: |
+          APP="$RUNNER_TEMP/GokturkOBS-build/Build/Products/Release/GokturkOBS.app"
+          test -d "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/GokturkOBS-macOS-unsigned.zip"
+
+      - name: Upload unsigned build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GokturkOBS-macOS-unsigned
+          path: ${{ runner.temp }}/GokturkOBS-macOS-unsigned.zip
+          if-no-files-found: error
+          retention-days: 14

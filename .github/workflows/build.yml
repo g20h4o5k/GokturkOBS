@@ -18,13 +18,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Remove stale missing resource from project
+      - name: Remove missing legacy resources from project
         run: |
           python3 - <<'PY'
           from pathlib import Path
           project = Path("GokturkOBS.xcodeproj/project.pbxproj")
           lines = project.read_text().splitlines(keepends=True)
-          lines = [line for line in lines if "TARAMALAR-API.md" not in line]
+          missing = ("TARAMALAR-API.md", "LimeOBS_Temiz_Dagitim.zip")
+          lines = [line for line in lines if not any(name in line for name in missing)]
           project.write_text("".join(lines))
           PY
 

@@ -1,8 +1,10 @@
-name: Build GokturkOBS (unsigned)
+name: Build and Release GokturkOBS (unsigned)
 
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 
@@ -44,16 +46,35 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Package application
+      - name: Create DMG installer
         run: |
+          set -euo pipefail
           APP="$RUNNER_TEMP/GokturkOBS-build/Build/Products/Release/GokturkOBS.app"
+          STAGING="$RUNNER_TEMP/GokturkOBS-dmg"
+          DMG="$RUNNER_TEMP/GokturkOBS-macOS-unsigned.dmg"
           test -d "$APP"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/GokturkOBS-macOS-unsigned.zip"
+          mkdir -p "$STAGING"
+          ditto "$APP" "$STAGING/GokturkOBS.app"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "GokturkOBS" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          hdiutil verify "$DMG"
 
-      - name: Upload unsigned build
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GokturkOBS-macOS-unsigned
-          path: ${{ runner.temp }}/GokturkOBS-macOS-unsigned.zip
+          name: GokturkOBS-macOS-unsigned-DMG
+          path: ${{ runner.temp }}/GokturkOBS-macOS-unsigned.dmg
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" "$RUNNER_TEMP/GokturkOBS-macOS-unsigned.dmg" \
+            --title "GokturkOBS $TAG" \
+            --generate-notes \
+            --verify-tag

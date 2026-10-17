@@ -25,6 +25,7 @@
 		87FCF790307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip in Resources */ = {isa = PBXBuildFile; fileRef = 87FCF78E307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip */; };
 		87FCF793307AC4AD00F9AF20 /* FoodMenuParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF792307AC4AD00F9AF20 /* FoodMenuParser.swift */; };
 		87FCF795307AC4DF00F9AF20 /* PortalFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF794307AC4DF00F9AF20 /* PortalFeatures.swift */; };
+		87FCF797307AD24D00F9AF20 /* HomeDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF796307AD24D00F9AF20 /* HomeDashboardView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,11 +49,33 @@
 		87FCF78E307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = LimeOBS_Temiz_Dagitim.zip; sourceTree = "<group>"; };
 		87FCF792307AC4AD00F9AF20 /* FoodMenuParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoodMenuParser.swift; sourceTree = "<group>"; };
 		87FCF794307AC4DF00F9AF20 /* PortalFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalFeatures.swift; sourceTree = "<group>"; };
+		87FCF796307AD24D00F9AF20 /* HomeDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8774FF31307F635A00680A3E /* Exceptions for "GokturkOBSTests" folder in "GokturkOBS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"GokturkOBS-Icon.icon",
+			);
+			target = 000000000000000100000000 /* GokturkOBS */;
+		};
+		8774FF32307F635A00680A3E /* Exceptions for "GokturkOBSTests" folder in "GokturkOBSTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"GokturkOBS-Icon.icon",
+			);
+			target = 870729C530797B1E00CB71A2 /* GokturkOBSTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		870729C730797B1E00CB71A2 /* GokturkOBSTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8774FF31307F635A00680A3E /* Exceptions for "GokturkOBSTests" folder in "GokturkOBS" target */,
+				8774FF32307F635A00680A3E /* Exceptions for "GokturkOBSTests" folder in "GokturkOBSTests" target */,
+			);
 			path = GokturkOBSTests;
 			sourceTree = "<group>";
 		};
@@ -111,6 +134,7 @@
 				87FCF78C307AB6E200F9AF20 /* TARAMALAR-API.md */,
 				87FCF792307AC4AD00F9AF20 /* FoodMenuParser.swift */,
 				87FCF794307AC4DF00F9AF20 /* PortalFeatures.swift */,
+				87FCF796307AD24D00F9AF20 /* HomeDashboardView.swift */,
 			);
 			path = GokturkOBS;
 			sourceTree = "<group>";
@@ -220,6 +244,7 @@
 				877270FC30753F28001C9D63 /* exams.swift in Sources */,
 				870729C130769FC900CB71A2 /* StudentProfileHTMLParser.swift in Sources */,
 				87FCF793307AC4AD00F9AF20 /* FoodMenuParser.swift in Sources */,
+				87FCF797307AD24D00F9AF20 /* HomeDashboardView.swift in Sources */,
 				87FCF795307AC4DF00F9AF20 /* PortalFeatures.swift in Sources */,
 				877270FD30753F28001C9D63 /* login.swift in Sources */,
 				877270FE30753F28001C9D63 /* homework.swift in Sources */,
@@ -369,6 +394,8 @@
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "GokturkOBS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = GokturkOBS;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 2937L6R7J4;
@@ -421,6 +448,9 @@
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "GokturkOBS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = GokturkOBS;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = GokturkOBS;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 2937L6R7J4;

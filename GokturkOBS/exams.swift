@@ -28,6 +28,15 @@ struct ExamDashboard: Codable {
         lessons = []
     }
 
+    init(exams: [StudentExam], preserving metadata: ExamDashboard) {
+        success = metadata.success
+        self.exams = exams
+        kpi = metadata.kpi
+        lessonSuccess = metadata.lessonSuccess
+        trend = metadata.trend
+        lessons = metadata.lessons
+    }
+
     enum CodingKeys: String, CodingKey {
         case success, exams, kpi, lessonSuccess, trend, lessons
     }
@@ -269,6 +278,39 @@ enum JSONValue: Codable, Equatable {
     }
 }
 
+fileprivate struct ExamTopicAnalysis: Identifiable {
+    let lesson: String
+    let topic: String
+    let questionCount: Int?
+    let correct: Int?
+    let wrong: Int?
+    let successRate: Double?
+
+    var id: String { "\(lesson)|\(topic)" }
+}
+
+fileprivate struct ExamLessonAnalysis: Identifiable {
+    let lesson: String
+    let topics: [ExamTopicAnalysis]
+
+    var id: String { lesson }
+    var questionCount: Int? { total(for: \.questionCount) }
+    var correct: Int? { total(for: \.correct) }
+    var wrong: Int? { total(for: \.wrong) }
+    var successRate: Double? {
+        if let questionCount, questionCount > 0, let correct {
+            return Double(correct) / Double(questionCount) * 100
+        }
+        let rates = topics.compactMap(\.successRate)
+        return rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count)
+    }
+
+    private func total(for keyPath: KeyPath<ExamTopicAnalysis, Int?>) -> Int? {
+        let values = topics.compactMap { $0[keyPath: keyPath] }
+        return values.isEmpty ? nil : values.reduce(0, +)
+    }
+}
+
 struct ExamSchoolReport: Codable {
     private static let examLessons = [
         "TÜRKÇE",
@@ -283,6 +325,7 @@ struct ExamSchoolReport: Codable {
     let data: [String: JSONValue]
     let subanal: JSONValue?
     let graphs: JSONValue?
+    private let lessonAnalyses: [ExamLessonAnalysis]
 
     enum CodingKeys: String, CodingKey { case success, data, subanal, graphs }
 
@@ -292,6 +335,128 @@ struct ExamSchoolReport: Codable {
         data = (try? container.decode([String: JSONValue].self, forKey: .data)) ?? [:]
         subanal = try container.decodeIfPresent(JSONValue.self, forKey: .subanal)
         graphs = try container.decodeIfPresent(JSONValue.self, forKey: .graphs)
+        lessonAnalyses = Self.parseLessonAnalyses(from: subanal)
+    }
+
+    fileprivate func achievementAnalyses() -> [ExamLessonAnalysis] {
+        lessonAnalyses
+    }
+
+    private static func parseLessonAnalyses(from value: JSONValue?) -> [ExamLessonAnalysis] {
+        guard let value else { return [] }
+        var rows: [ExamTopicAnalysis] = []
+        collectTopicRows(from: value, inheritedLesson: nil, into: &rows)
+
+        var lessonOrder: [String] = []
+        var grouped: [String: [ExamTopicAnalysis]] = [:]
+        for row in rows {
+            if grouped[row.lesson] == nil {
+                lessonOrder.append(row.lesson)
+            }
+            if let index = grouped[row.lesson]?.firstIndex(where: { $0.topic == row.topic }) {
+                let existing = grouped[row.lesson]?[index]
+                grouped[row.lesson]?[index] = ExamTopicAnalysis(
+                    lesson: row.lesson,
+                    topic: row.topic,
+                    questionCount: combined(existing?.questionCount, row.questionCount),
+                    correct: combined(existing?.correct, row.correct),
+                    wrong: combined(existing?.wrong, row.wrong),
+                    successRate: combinedRate(existing, row)
+                )
+            } else {
+                grouped[row.lesson, default: []].append(row)
+            }
+        }
+
+        return lessonOrder.compactMap { lesson in
+            guard let topics = grouped[lesson], !topics.isEmpty else { return nil }
+            return ExamLessonAnalysis(lesson: lesson, topics: topics)
+        }
+    }
+
+    private static func collectTopicRows(
+        from value: JSONValue,
+        inheritedLesson: String?,
+        into rows: inout [ExamTopicAnalysis]
+    ) {
+        switch value {
+        case .array(let values):
+            for child in values {
+                collectTopicRows(from: child, inheritedLesson: inheritedLesson, into: &rows)
+            }
+        case .object(let fields):
+            let lesson = string(in: fields, keys: ["lesson", "ders", "dersAd", "lessonName"])
+                ?? inheritedLesson
+                ?? "Diğer"
+            let topic = string(in: fields, keys: ["konuAd", "konu", "kazanim", "kazanım", "topic"])
+            let questionCount = integer(in: fields, keys: ["SSay", "soruSayisi", "questionCount"])
+            let correct = integer(in: fields, keys: ["Dog", "dogru", "correct"])
+            let wrong = integer(in: fields, keys: ["Yan", "yanlis", "yanlış", "wrong"])
+            let successRate = number(in: fields, keys: ["Bas", "basari", "başarı", "successRate"])
+
+            if let topic, questionCount != nil || correct != nil || wrong != nil || successRate != nil {
+                rows.append(
+                    ExamTopicAnalysis(
+                        lesson: lesson,
+                        topic: topic,
+                        questionCount: questionCount,
+                        correct: correct,
+                        wrong: wrong,
+                        successRate: successRate
+                    )
+                )
+                return
+            }
+
+            for child in fields.values {
+                collectTopicRows(from: child, inheritedLesson: lesson == "Diğer" ? inheritedLesson : lesson, into: &rows)
+            }
+        case .string, .number, .bool, .null:
+            break
+        }
+    }
+
+    private static func string(in fields: [String: JSONValue], keys: [String]) -> String? {
+        guard let text = value(in: fields, keys: keys)?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func integer(in fields: [String: JSONValue], keys: [String]) -> Int? {
+        guard let number = value(in: fields, keys: keys)?.numberValue else { return nil }
+        return Int(number.rounded())
+    }
+
+    private static func number(in fields: [String: JSONValue], keys: [String]) -> Double? {
+        value(in: fields, keys: keys)?.numberValue
+    }
+
+    private static func value(in fields: [String: JSONValue], keys: [String]) -> JSONValue? {
+        for key in keys {
+            if let exact = fields[key] { return exact }
+            if let match = fields.first(where: { $0.key.localizedCaseInsensitiveCompare(key) == .orderedSame }) {
+                return match.value
+            }
+        }
+        return nil
+    }
+
+    private static func combined(_ first: Int?, _ second: Int?) -> Int? {
+        guard first != nil || second != nil else { return nil }
+        return (first ?? 0) + (second ?? 0)
+    }
+
+    private static func combinedRate(_ first: ExamTopicAnalysis?, _ second: ExamTopicAnalysis) -> Double? {
+        guard let first else { return second.successRate }
+        if let firstCount = first.questionCount,
+           let secondCount = second.questionCount,
+           firstCount + secondCount > 0,
+           let firstRate = first.successRate,
+           let secondRate = second.successRate {
+            return (firstRate * Double(firstCount) + secondRate * Double(secondCount))
+                / Double(firstCount + secondCount)
+        }
+        return second.successRate ?? first.successRate
     }
 
     func subjectResults() -> [ExamSubjectResult] {
@@ -438,20 +603,21 @@ struct ExamsView: View {
 
                             if !dashboard.exams.isEmpty {
                                 sectionTitle("Puan Grafiği")
-                                Chart(Array(dashboard.exams.enumerated()), id: \.element.id) { index, exam in
+                                Chart(Array(dashboard.exams.enumerated().reversed()), id: \.element.id) { index, exam in
                                     let point = dashboard.normalizedTrendPoints.indices.contains(index)
                                         ? dashboard.normalizedTrendPoints[index]
                                         : exam.point
                                     LineMark(
-                                        x: .value("Sınav", "\(exam.examDate) · \(index + 1)"),
+                                        x: .value("Sınav", "\(exam.examDate) · \(dashboard.exams.count - index)"),
                                         y: .value("Puan", point)
                                     )
                                     PointMark(
-                                        x: .value("Sınav", "\(exam.examDate) · \(index + 1)"),
+                                        x: .value("Sınav", "\(exam.examDate) · \(dashboard.exams.count - index)"),
                                         y: .value("Puan", point)
                                     )
                                 }
                                 .chartYAxisLabel("Puan")
+                                .chartYScale(domain: 0...500)
                                 .frame(height: 220)
                             }
 
@@ -560,92 +726,46 @@ private struct ExamRow: View {
 }
 
 struct ExamDetailView: View {
+    enum Section: String, CaseIterable, Identifiable {
+        case results = "Netler"
+        case answers = "Cevaplar"
+        case analysis = "Kazanım"
+
+        var id: Self { self }
+    }
+
     let exam: StudentExam
     @ObservedObject var model: AppModel
-
-    private var subjects: [ExamSubjectResult] {
-        model.examReport?.subjectResults() ?? []
-    }
+    @State private var section: Section = .results
 
     var body: some View {
         Group {
             if let report = model.examReport {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(exam.examName).font(.title2.weight(.semibold))
-                            Text(exam.examDate).foregroundStyle(.secondary)
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading, spacing: 8) {
-                                ExamMetricTile(title: "Puan", value: (report.score ?? exam.point).formatted(.number.precision(.fractionLength(0...2))))
-                                ExamMetricTile(title: "Net", value: (report.totalNet ?? exam.net).formatted(.number.precision(.fractionLength(0...2))))
-                                ExamMetricTile(title: "Doğru", value: "\(report.totalCorrect ?? exam.dogru)")
-                                ExamMetricTile(title: "Yanlış", value: "\(report.totalWrong ?? exam.yanlis)")
-                                ExamMetricTile(title: "Boş", value: "\(report.totalBlank ?? exam.bos)")
-                                ExamMetricTile(title: "Soru sayısı", value: "\(report.totalQuestions ?? exam.questionCount)")
-                                if let rank = report.classRank { ExamMetricTile(title: "Sınıf derecesi", value: "\(rank)") }
-                                if let rank = report.generalRank { ExamMetricTile(title: "Genel derece", value: "\(rank)") }
-                            }
-                        }
-
-                        if !subjects.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Ders Sonuçları").font(.title3.weight(.semibold))
-                                ForEach(subjects) { subject in
-                                    VStack(alignment: .leading, spacing: 7) {
-                                        HStack {
-                                            Text(subject.lesson).font(.headline)
-                                            Spacer()
-                                            Text("\(subject.questionCount) soru")
-                                                .font(.caption).foregroundStyle(.secondary)
-                                        }
-                                        HStack(spacing: 14) {
-                                            Text("\(subject.correct) doğru")
-                                            Text("\(subject.wrong) yanlış")
-                                            Text("\(subject.blank) boş")
-                                            Spacer()
-                                            Text("\(subject.net.formatted(.number.precision(.fractionLength(2)))) net")
-                                                .fontWeight(.medium)
-                                        }
-                                        .font(.caption)
-                                        if subject.answerCountsMatchSummary == false {
-                                            Label("Cevap analizi özet D/Y/B değerleriyle uyuşmuyor.", systemImage: "exclamationmark.circle")
-                                                .font(.caption2).foregroundStyle(.orange)
-                                        }
-                                    }
-                                    .padding(.vertical, 7)
-                                    Divider()
-                                }
-                            }
-                        }
-
-                        if let subanal = report.subanal, subanal != .null {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Konu Analizi").font(.title3.weight(.semibold))
-                                JSONAnalysisView(value: subanal, title: "Dersler")
-                            }
-                        }
-
-                        ForEach(subjects.filter { !$0.questions.isEmpty }) { subject in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("\(subject.lesson) · Soru Analizi")
-                                    .font(.title3.weight(.semibold))
-                                HStack {
-                                    Text("Soru").frame(width: 48, alignment: .leading)
-                                    Text("Doğru cevap").frame(width: 100, alignment: .leading)
-                                    Text("Öğrenci cevabı").frame(width: 110, alignment: .leading)
-                                    Text("Sonuç")
-                                }
-                                .font(.caption.weight(.semibold))
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(exam.examName)
+                            .font(.title2.weight(.semibold))
+                        if !exam.examDate.isEmpty {
+                            Text(exam.examDate)
                                 .foregroundStyle(.secondary)
-                                ForEach(subject.questions) { question in
-                                    ExamQuestionRow(question: question)
-                                }
+                        }
+                        Picker("Sınav bölümü", selection: $section) {
+                            ForEach(Section.allCases) { item in
+                                Text(item.rawValue).tag(item)
                             }
                         }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 420)
+                        .padding(.top, 8)
                     }
-                    .padding(22)
-                    .frame(maxWidth: 850, alignment: .leading)
+                    .padding(20)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    Divider()
+                    ExamDetailSectionContent(
+                        section: section,
+                        exam: exam,
+                        report: report
+                    )
                 }
             } else if model.isLoadingExamReport {
                 ProgressView("Sınav detayları yükleniyor...")
@@ -661,6 +781,253 @@ struct ExamDetailView: View {
         .task(id: exam.id) {
             await model.loadExamReport(examId: exam.examId, examType: exam.examType)
         }
+    }
+}
+
+private struct ExamDetailSectionContent: View {
+    let section: ExamDetailView.Section
+    let exam: StudentExam
+    let report: ExamSchoolReport
+
+    var body: some View {
+        switch section {
+        case .results:
+            ExamResultsSection(exam: exam, report: report)
+        case .answers:
+            ExamAnswersSection(subjects: report.subjectResults())
+        case .analysis:
+            ExamAnalysisSection(lessons: report.achievementAnalyses())
+        }
+    }
+}
+
+private struct ExamResultsSection: View {
+    let exam: StudentExam
+    let report: ExamSchoolReport
+
+    private var subjects: [ExamSubjectResult] { report.subjectResults() }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)],
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    ExamMetricTile(title: "Puan", value: (report.score ?? exam.point).formatted(.number.precision(.fractionLength(0...2))))
+                    ExamMetricTile(title: "Net", value: (report.totalNet ?? exam.net).formatted(.number.precision(.fractionLength(0...2))))
+                    ExamMetricTile(title: "Doğru", value: "\(report.totalCorrect ?? exam.dogru)")
+                    ExamMetricTile(title: "Yanlış", value: "\(report.totalWrong ?? exam.yanlis)")
+                    ExamMetricTile(title: "Boş", value: "\(report.totalBlank ?? exam.bos)")
+                    ExamMetricTile(title: "Soru sayısı", value: "\(report.totalQuestions ?? exam.questionCount)")
+                    if let rank = report.classRank {
+                        ExamMetricTile(title: "Sınıf derecesi", value: "\(rank)")
+                    }
+                    if let rank = report.generalRank {
+                        ExamMetricTile(title: "Genel derece", value: "\(rank)")
+                    }
+                }
+
+                Text("Netler")
+                    .font(.title3.weight(.semibold))
+                ScrollView(.horizontal) {
+                    Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
+                        GridRow {
+                            Text("Ders")
+                            Text("S.Say")
+                            Text("Doğru")
+                            Text("Yanlış")
+                            Text("Boş")
+                            Text("Net")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                        ForEach(subjects) { subject in
+                            GridRow {
+                                Text(subject.lesson).frame(minWidth: 150, alignment: .leading)
+                                Text("\(subject.questionCount)").monospacedDigit()
+                                Text("\(subject.correct)").monospacedDigit().foregroundStyle(.green)
+                                Text("\(subject.wrong)").monospacedDigit().foregroundStyle(.red)
+                                Text("\(subject.blank)").monospacedDigit().foregroundStyle(.secondary)
+                                Text(subject.net.formatted(.number.precision(.fractionLength(0...2))))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 900, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct ExamAnswersSection: View {
+    let subjects: [ExamSubjectResult]
+
+    private var subjectsWithAnswers: [ExamSubjectResult] {
+        subjects.filter { !$0.questions.isEmpty }
+    }
+
+    var body: some View {
+        if subjectsWithAnswers.isEmpty {
+            ContentUnavailableView(
+                "Cevap analizi bulunamadı",
+                systemImage: "checklist",
+                description: Text("Bu sınav için cevap anahtarı veya öğrenci cevabı paylaşılmamış.")
+            )
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(subjectsWithAnswers) { subject in
+                        ExamAnswerSubjectSection(subject: subject)
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct ExamAnswerSubjectSection: View {
+    let subject: ExamSubjectResult
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(subject.lesson)
+                .font(.title3.weight(.semibold))
+            HStack {
+                Text("Soru").frame(width: 48, alignment: .leading)
+                Text("Cevap Anahtarı").frame(width: 100, alignment: .leading)
+                Text("Öğrenci Cevabı").frame(width: 110, alignment: .leading)
+                Text("Durum")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            ForEach(subject.questions) { question in
+                ExamQuestionRow(question: question)
+            }
+            if subject.answerCountsMatchSummary == false {
+                Label("Cevap analizi özet D/Y/B değerleriyle uyuşmuyor.", systemImage: "exclamationmark.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+}
+
+private struct ExamAnalysisSection: View {
+    let lessons: [ExamLessonAnalysis]
+
+    var body: some View {
+        if !lessons.isEmpty {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    Text("Kazanım Analizi")
+                        .font(.title3.weight(.semibold))
+                    ForEach(lessons) { lesson in
+                        ExamLessonAnalysisSection(analysis: lesson)
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: 900, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            ContentUnavailableView(
+                "Kazanım analizi bulunamadı",
+                systemImage: "list.bullet.clipboard",
+                description: Text("Bu sınav için kazanım bilgisi paylaşılmamış.")
+            )
+        }
+    }
+}
+
+private struct ExamLessonAnalysisSection: View {
+    let analysis: ExamLessonAnalysis
+
+    var body: some View {
+        GroupBox {
+            ScrollView(.horizontal) {
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Konu / Kazanım")
+                        Text("Soru")
+                        Text("Doğru")
+                        Text("Yanlış")
+                        Text("Başarı")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                    Divider()
+                        .gridCellColumns(5)
+
+                    ForEach(analysis.topics) { topic in
+                        GridRow {
+                            Text(topic.topic)
+                                .frame(minWidth: 260, maxWidth: 440, alignment: .leading)
+                            analysisValue(topic.questionCount, color: .secondary)
+                            analysisValue(topic.correct, color: .green)
+                            analysisValue(topic.wrong, color: .red)
+                            percentageValue(topic.successRate)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(analysis.lesson)
+                    .font(.headline)
+                Spacer()
+                lessonSummary
+            }
+        }
+    }
+
+    private var lessonSummary: some View {
+        HStack(spacing: 10) {
+            if let count = analysis.questionCount {
+                Text("\(count) soru")
+            }
+            if let correct = analysis.correct {
+                Label("\(correct)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            if let wrong = analysis.wrong {
+                Label("\(wrong)", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+            if let successRate = analysis.successRate {
+                Label(
+                    successRate.formatted(.number.precision(.fractionLength(0...1))) + "%",
+                    systemImage: "chart.bar.fill"
+                )
+                .foregroundStyle(.blue)
+            }
+        }
+        .font(.caption.monospacedDigit())
+        .labelStyle(.titleAndIcon)
+    }
+
+    private func analysisValue(_ value: Int?, color: Color) -> some View {
+        Text(value.map(String.init) ?? "—")
+            .monospacedDigit()
+            .foregroundStyle(color)
+            .frame(minWidth: 48, alignment: .leading)
+    }
+
+    private func percentageValue(_ value: Double?) -> some View {
+        Text(value.map { $0.formatted(.number.precision(.fractionLength(0...1))) + "%" } ?? "—")
+            .monospacedDigit()
+            .foregroundStyle(.blue)
+            .frame(minWidth: 58, alignment: .leading)
     }
 }
 

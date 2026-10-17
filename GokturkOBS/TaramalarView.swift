@@ -234,7 +234,7 @@ struct TaramalarView: View {
                 } else {
                     List(model.taramalar) { exam in
                         NavigationLink {
-                            ExamDetailView(exam: StudentExam(taramaExam: exam), model: model)
+                            TaramaDetailView(exam: exam, model: model)
                         } label: {
                             TaramaRow(exam: exam)
                         }
@@ -292,7 +292,9 @@ private struct TaramaDetailView: View {
 
     var body: some View {
         Group {
-            if model.isLoadingTaramaDetail && model.isLoadingExamReport && model.taramaDetail == nil && model.examReport == nil {
+            if (model.isLoadingTaramaDetail || model.isLoadingExamReport)
+                && model.taramaDetail == nil
+                && model.examReport == nil {
                 ProgressView("Tarama detayları yükleniyor...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let report = model.examReport, model.taramaDetail == nil {
@@ -320,6 +322,9 @@ private struct TaramaDetailView: View {
                     Divider()
                     sectionContent(detail)
                 }
+            } else {
+                ProgressView("Tarama detayları hazırlanıyor...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle("Tarama Detayı")

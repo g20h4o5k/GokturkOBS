@@ -121,7 +121,7 @@ private struct SidebarProfileView: View {
 
     private var displayName: String {
         guard let name, !name.isEmpty else {
-            return "Kullanıcı"
+            return "Cem Yılmaz"
         }
         return name.capitalized(with: Locale(identifier: "tr_TR"))
     }

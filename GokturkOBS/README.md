@@ -15,7 +15,7 @@ GöktürkOBS'nin amacı Akbim OBS'nin web arayüzü yerine daha hızlı, sade ve
 - [x] Ders programı
 - [x] Sınav sonuçları
 - [x] Ödevler
-- [ ] Duyurular
+- [x] Duyurular
 - [ ] Ajanda
 
 ## Gereksinimler

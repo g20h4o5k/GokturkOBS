@@ -172,6 +172,13 @@ final class OBSClient {
         return URLSession(configuration: configuration)
     }()
 
+    private lazy var connectivitySession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
     func configureRecovery(credentialProvider: @escaping () throws -> StoredCredentials?) {
         self.credentialProvider = credentialProvider
     }
@@ -463,8 +470,11 @@ final class OBSClient {
                 return try await operation()
             } catch is CancellationError {
                 throw CancellationError()
-            } catch OBSClientError.sessionExpired where !recoveredSession {
+            } catch where !recoveredSession {
                 recoveredSession = true
+                guard await canReachInternet() else {
+                    throw OBSClientError.serverError
+                }
                 try await recover(sessionKind)
             } catch {
                 guard transientRetryCount < 3, let delay = retryDelay(for: error, retryNumber: transientRetryCount) else {
@@ -473,6 +483,24 @@ final class OBSClient {
                 transientRetryCount += 1
                 try await Task.sleep(for: .seconds(delay))
             }
+        }
+    }
+
+    private func canReachInternet() async -> Bool {
+        guard let url = URL(string: "https://1.1.1.1/cdn-cgi/trace") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        do {
+            let (_, response) = try await connectivitySession.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return 200..<500 ~= http.statusCode
+        } catch is CancellationError {
+            return false
+        } catch {
+            verbose("[Recovery] 1.1.1.1 bağlantı kontrolü başarısız: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -774,7 +802,15 @@ final class OBSClient {
             ])
             let result = try JSONDecoder().decode(ExamDashboard.self, from: data)
             guard result.success else { throw OBSClientError.serverError }
-            return result
+
+            let listedExams = try await loadWebExamRecords()
+                .filter { $0.examType == "SBS" }
+                .map { record in
+                    result.exams.first {
+                        $0.examId == record.sinavKod && $0.examType.uppercased() == record.examType
+                    } ?? StudentExam(indexRecord: record)
+                }
+            return ExamDashboard(exams: listedExams, preserving: result)
         }
     }
 

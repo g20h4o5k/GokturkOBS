@@ -29,11 +29,19 @@ final class AppModel: ObservableObject {
     @Published var isLoadingHomeworkDetail = false
     @Published var homeworkDetailError: String?
     @Published var foodListState: FoodListLoadState = .idle
+    @Published var foodListSelectedDayID: FoodMenuDay.ID?
+    @Published var isLoadingSchedule = true
+    @Published var isLoadingHomework = true
+    @Published var isLoadingExams = true
+    @Published var scheduleError: String?
+    @Published var homeworkError: String?
+    @Published var examsError: String?
     @Published var studentProfile: StudentProfile?
     @Published var studentProfileImage: NSImage?
     @Published var isLoadingStudentProfile = false
     @Published var isLoading = true
     @Published var isLoggingIn = false
+    @Published var youAreCooked = true
     @Published var authenticated = false
     @Published var error: String?
     @Published var rememberMe = UserDefaults.standard.bool(forKey: "rememberMe") {
@@ -213,35 +221,85 @@ final class AppModel: ObservableObject {
         guard authenticated else { return }
         var failures: [String] = []
 
+        isLoadingSchedule = true
+        scheduleError = nil
         do {
             schedule = try await client.loadIndex()
         } catch {
             if requiresExplicitLogin(after: error) {
+                isLoadingSchedule = false
                 authenticated = false
                 self.error = "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
                 return
             }
+            scheduleError = networkErrorMessage(for: error)
             failures.append("Ders programı alınamadı.")
         }
+        isLoadingSchedule = false
 
+        isLoadingHomework = true
+        homeworkError = nil
         do {
             homework = try await client.loadHomework()
         } catch {
+            homeworkError = networkErrorMessage(for: error)
             failures.append("Ödevler alınamadı.")
         }
+        isLoadingHomework = false
 
+        isLoadingExams = true
+        examsError = nil
         do {
             examDashboard = try await client.loadStudentExams()
         } catch {
             if requiresExplicitLogin(after: error) {
+                isLoadingExams = false
                 authenticated = false
                 self.error = "Oturum yenilenemedi. Lütfen tekrar giriş yapın."
                 return
             }
+            examsError = networkErrorMessage(for: error)
             failures.append("Sınavlar alınamadı.")
         }
+        isLoadingExams = false
 
         error = failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
+
+    func refreshHome(forceReload: Bool = false) async {
+        guard authenticated else { return }
+        if forceReload || schedule == nil || examDashboard == nil || homeworkError != nil {
+            await refresh()
+        }
+        await loadFoodList(forceReload: forceReload)
+    }
+
+    func retryWithAutomaticLogin() async {
+        guard !isLoggingIn else { return }
+        isLoggingIn = true
+        error = nil
+        defer { isLoggingIn = false }
+
+        do {
+            guard let credentials = try keychain.load() else {
+                throw OBSClientError.recoveryUnavailable
+            }
+            try await client.login(
+                username: credentials.username,
+                password: credentials.password
+            )
+            authenticated = true
+            UserDefaults.standard.set(false, forKey: "didManuallyLogout")
+            configureAutomaticRecovery()
+
+            hasAttemptedStudentProfileLoad = false
+            studentProfile = nil
+            studentProfileImage = nil
+            await refreshHome(forceReload: true)
+            await loadSidebarProfile()
+        } catch {
+            self.error = networkErrorMessage(for: error)
+        }
     }
 
     private func requiresExplicitLogin(after error: Error) -> Bool {
@@ -520,6 +578,12 @@ final class AppModel: ObservableObject {
         schedule = nil
         homework = []
         examDashboard = nil
+        isLoadingSchedule = true
+        isLoadingHomework = true
+        isLoadingExams = true
+        scheduleError = nil
+        homeworkError = nil
+        examsError = nil
         examReport = nil
         examReportRequestToken = nil
         isLoadingExamReport = false
@@ -543,18 +607,13 @@ final class AppModel: ObservableObject {
         isLoadingHomeworkDetail = false
         homeworkDetailError = nil
         foodListState = .idle
+        foodListSelectedDayID = nil
         studentProfile = nil
         studentProfileImage = nil
         isLoadingStudentProfile = false
         hasAttemptedStudentProfileLoad = false
         username = ""
         password = ""
-    }
-}
-
-struct HomeView: View {
-    var body: some View {
-        ContentUnavailableView("Ana Sayfa", systemImage: "house", description: Text("GöktürkOBS ana sayfası.")).navigationTitle("Ana Sayfa")
     }
 }
 
@@ -790,7 +849,7 @@ enum AppSection: Hashable {
 
 struct MainView: View {
     @ObservedObject var model: AppModel
-    @State private var selection: AppSection? = .schedule
+    @State private var selection: AppSection? = .home
 
     var body: some View {
         GeometryReader { proxy in
@@ -819,7 +878,7 @@ struct MainView: View {
             Group {
                 switch selection {
                 case .home:
-                    HomeView()
+                    HomeDashboardView(model: model, selection: $selection)
                 case .schedule:
                     if let schedule = model.schedule {
                         ScheduleView(schedule: schedule) {
@@ -861,10 +920,11 @@ struct MainView: View {
             }.toolbar {
                 ToolbarItemGroup(placement: .secondaryAction) {
                     Button {
-                        Task { await model.refresh() }
+                        Task { await model.retryWithAutomaticLogin() }
                     } label: {
-                        Label("Yenile", systemImage: "arrow.clockwise")
+                        Label("Yeniden Dene", systemImage: "arrow.clockwise")
                     }
+                    .disabled(model.isLoggingIn)
                     Button { model.logout() } label: {
                         Label("Çıkış Yap", systemImage: "rectangle.portrait.and.arrow.right")
                     }

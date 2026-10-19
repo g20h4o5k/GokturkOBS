@@ -4,6 +4,8 @@ Akbim OBS için geliştirilen, macOS'a özel, native SwiftUI istemcisi.
 
 GöktürkOBS'nin amacı Akbim OBS'nin web arayüzü yerine daha hızlı, sade ve macOS ile uyumlu bir kullanım deneyimi sunmaktır.
 
+[Nasıl Çalışıyor?](AKBIM_OBS_API.md)
+
 ## Durum
 
 *işler bok götürüyo*

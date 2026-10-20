@@ -16,7 +16,7 @@ enum KeychainServiceError: LocalizedError {
             let message = SecCopyErrorMessageString(status, nil) as String?
             return "Keychain işlemi başarısız: \(message ?? "bilinmeyen hata")"
         case .invalidStoredCredentials:
-            return "Keychain'deki giriş bilgileri okunamadı."
+            return "Keychain'deki giriş bilgileri okunamadı"
         }
     }
 }

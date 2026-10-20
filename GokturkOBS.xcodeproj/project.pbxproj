@@ -20,9 +20,6 @@
 		877270FE30753F28001C9D63 /* homework.swift in Sources */ = {isa = PBXBuildFile; fileRef = 877270F030753F28001C9D63 /* homework.swift */; };
 		877270FF30753F28001C9D63 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8772710030753F28001C9D63 /* KeychainService.swift */; };
 		87FCF78B307AB69500F9AF20 /* TaramalarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF78A307AB69500F9AF20 /* TaramalarView.swift */; };
-		87FCF78D307AB6E200F9AF20 /* TARAMALAR-API.md in Resources */ = {isa = PBXBuildFile; fileRef = 87FCF78C307AB6E200F9AF20 /* TARAMALAR-API.md */; };
-		87FCF78F307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip in Resources */ = {isa = PBXBuildFile; fileRef = 87FCF78E307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip */; };
-		87FCF790307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip in Resources */ = {isa = PBXBuildFile; fileRef = 87FCF78E307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip */; };
 		87FCF793307AC4AD00F9AF20 /* FoodMenuParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF792307AC4AD00F9AF20 /* FoodMenuParser.swift */; };
 		87FCF795307AC4DF00F9AF20 /* PortalFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF794307AC4DF00F9AF20 /* PortalFeatures.swift */; };
 		87FCF797307AD24D00F9AF20 /* HomeDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FCF796307AD24D00F9AF20 /* HomeDashboardView.swift */; };
@@ -45,8 +42,6 @@
 		877270F530753F28001C9D63 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		8772710030753F28001C9D63 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		87FCF78A307AB69500F9AF20 /* TaramalarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaramalarView.swift; sourceTree = "<group>"; };
-		87FCF78C307AB6E200F9AF20 /* TARAMALAR-API.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "TARAMALAR-API.md"; sourceTree = "<group>"; };
-		87FCF78E307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = LimeOBS_Temiz_Dagitim.zip; sourceTree = "<group>"; };
 		87FCF792307AC4AD00F9AF20 /* FoodMenuParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoodMenuParser.swift; sourceTree = "<group>"; };
 		87FCF794307AC4DF00F9AF20 /* PortalFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalFeatures.swift; sourceTree = "<group>"; };
 		87FCF796307AD24D00F9AF20 /* HomeDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardView.swift; sourceTree = "<group>"; };
@@ -119,7 +114,6 @@
 				877270EE30753F28001C9D63 /* Assets.xcassets */,
 				877270EF30753F28001C9D63 /* exams.swift */,
 				877270F030753F28001C9D63 /* homework.swift */,
-				87FCF78E307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip */,
 				877270F130753F28001C9D63 /* LICENSE */,
 				877270F230753F28001C9D63 /* login.swift */,
 				877270ED30753F28001C9D63 /* anadosya.swift */,
@@ -131,7 +125,6 @@
 				870729BE30769F9D00CB71A2 /* SidebarProfileView.swift */,
 				870729C030769FC900CB71A2 /* StudentProfileHTMLParser.swift */,
 				87FCF78A307AB69500F9AF20 /* TaramalarView.swift */,
-				87FCF78C307AB6E200F9AF20 /* TARAMALAR-API.md */,
 				87FCF792307AC4AD00F9AF20 /* FoodMenuParser.swift */,
 				87FCF794307AC4DF00F9AF20 /* PortalFeatures.swift */,
 				87FCF796307AD24D00F9AF20 /* HomeDashboardView.swift */,
@@ -218,16 +211,13 @@
 			isa = PBXResourcesBuildPhase;
 			files = (
 				877270F730753F28001C9D63 /* README.md in Resources */,
-				87FCF790307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip in Resources */,
 				877270F830753F28001C9D63 /* Assets.xcassets in Resources */,
 				877270F930753F28001C9D63 /* LICENSE in Resources */,
-				87FCF78D307AB6E200F9AF20 /* TARAMALAR-API.md in Resources */,
 			);
 		};
 		870729C430797B1E00CB71A2 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				87FCF78F307ABFFF00F9AF20 /* LimeOBS_Temiz_Dagitim.zip in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */

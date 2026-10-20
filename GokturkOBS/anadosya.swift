@@ -44,6 +44,11 @@ final class AppModel: ObservableObject {
     @Published var youAreCooked = true
     @Published var authenticated = false
     @Published var error: String?
+    @Published var isScreenshotMode = UserDefaults.standard.bool(forKey: "isScreenshotMode") {
+        didSet {
+            UserDefaults.standard.set(isScreenshotMode, forKey: "isScreenshotMode")
+        }
+    }
     @Published var rememberMe = UserDefaults.standard.bool(forKey: "rememberMe") {
         didSet {
             UserDefaults.standard.set(rememberMe, forKey: "rememberMe")
@@ -72,6 +77,7 @@ final class AppModel: ObservableObject {
     private var hasAttemptedStudentProfileLoad = false
     private var hasStarted = false
     private var attemptedRememberedLogin = false
+    private var foodPhotoPrefetchTask: Task<Void, Never>?
 
     init() {
         configureAutomaticRecovery()
@@ -379,12 +385,35 @@ final class AppModel: ObservableObject {
                 guard let document = PDFDocument(data: data) else {
                     throw OBSClientError.invalidResponse("Yemek listesi geçerli bir PDF dosyası değil.")
                 }
-                foodListState = .loaded(document, FoodMenuParser.parse(document))
+                let days = FoodMenuParser.parse(document)
+                foodListState = .loaded(document, days)
+                startFoodPhotoPrefetch(for: days)
             case .empty:
+                foodPhotoPrefetchTask?.cancel()
                 foodListState = .empty
             }
         } catch {
             foodListState = .error(networkErrorMessage(for: error))
+        }
+    }
+
+    private func startFoodPhotoPrefetch(for days: [FoodMenuDay]) {
+        foodPhotoPrefetchTask?.cancel()
+        let schoolDayEnded = schedule.map {
+            ScheduleDashboardResolver.hasSchoolDayEnded(in: $0)
+        } ?? false
+        guard let day = FoodDashboardResolver.currentOrNextMeal(
+            in: days,
+            beginWithNextDay: schoolDayEnded
+        )?.day else {
+            foodPhotoPrefetchTask = nil
+            return
+        }
+
+        let mealNames = day.items
+        let menuDayID = day.id
+        foodPhotoPrefetchTask = Task(priority: .utility) {
+            await prefetchFoodPhotos(for: mealNames, menuDayID: menuDayID)
         }
     }
 
@@ -606,6 +635,8 @@ final class AppModel: ObservableObject {
         homeworkDetailRequestToken = nil
         isLoadingHomeworkDetail = false
         homeworkDetailError = nil
+        foodPhotoPrefetchTask?.cancel()
+        foodPhotoPrefetchTask = nil
         foodListState = .idle
         foodListSelectedDayID = nil
         studentProfile = nil
@@ -619,6 +650,7 @@ final class AppModel: ObservableObject {
 
 struct HomeworkView: View {
     @ObservedObject var model: AppModel
+    @State private var selectedHomework: Homework?
 
     var body: some View {
         NavigationStack {
@@ -631,16 +663,62 @@ struct HomeworkView: View {
                     )
                 } else {
                     List(model.homework) { item in
-                        NavigationLink {
-                            HomeworkDetailView(homework: item, model: model)
+                        Button {
+                            selectedHomework = item
                         } label: {
                             HomeworkRowView(homework: item)
                         }
+                        .buttonStyle(.plain)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
+                    .listStyle(.inset)
                 }
             }
             .navigationTitle("Ödevler")
+            .sheet(item: $selectedHomework) { homework in
+                HomeworkDetailSheet(homework: homework, model: model)
+            }
         }
+    }
+}
+
+private struct HomeworkDetailSheet: View {
+    let homework: Homework
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(.secondary)
+                Text("Ödev Ayrıntısı")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.bar)
+
+            Divider()
+
+            HomeworkDetailView(homework: homework, model: model)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Bitti") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.bar)
+        }
+        .frame(minWidth: 620, idealWidth: 720, minHeight: 520, idealHeight: 680)
     }
 }
 
@@ -650,12 +728,11 @@ private struct HomeworkRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
                 Text(homework.title).font(.headline)
                 Spacer()
-                Text(homework.statusName).font(.caption).foregroundStyle(.secondary)
+                Text(homework.statusName)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(statusColor)
             }
             HStack {
                 Text(homework.lesson).font(.subheadline)
@@ -675,25 +752,73 @@ private struct HomeworkRowView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 5)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            statusColor.opacity(0.22),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(statusColor.opacity(0.60), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Ödev ayrıntılarını açar")
     }
 
     private var statusColor: Color {
-        if homework.statusName == "Yapılmadı" {
+        let normalizedStatus = homework.statusName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(with: Locale(identifier: "tr_TR"))
+
+        if normalizedStatus.contains("değerlendirilmedi") || normalizedStatus.contains("değelendirilmedi") {
+            return hasDeadlinePassed ? .green : .gray
+        }
+        if normalizedStatus.contains("yapılmadı") {
             return .red
         }
-
-        if !homework.isActive {
-            return .gray
-        }
-
-        switch homework.statusName {
-        case "Değerlendirilmedi":
-            return .blue
-        default:
+        if normalizedStatus.contains("eksik") {
             return .yellow
         }
+        if normalizedStatus.contains("yapıldı")
+            || normalizedStatus.contains("tamamlandı")
+            || normalizedStatus.contains("teslim edildi") {
+            return .green
+        }
+        return .gray
+    }
+
+    private var hasDeadlinePassed: Bool {
+        guard let endDate = parsedEndDate else { return false }
+
+        if homework.endDate.contains(":") {
+            return endDate < Date()
+        }
+        return endDate < Calendar.current.startOfDay(for: Date())
+    }
+
+    private var parsedEndDate: Date? {
+        let formats = [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss",
+            "dd.MM.yyyy HH:mm",
+            "dd/MM/yyyy HH:mm",
+            "yyyy-MM-dd",
+            "dd.MM.yyyy",
+            "dd/MM/yyyy"
+        ]
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "tr_TR_POSIX")
+
+        for format in formats {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: homework.endDate) {
+                return date
+            }
+        }
+        return nil
     }
 }
 
@@ -705,38 +830,83 @@ private struct HomeworkDetailView: View {
         Group {
             if let detail = model.homeworkDetail, detail.id == homework.id {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(detail.title).font(.title2.weight(.semibold))
-                            LabeledContent("Ders", value: detail.lesson)
-                            LabeledContent("Öğretmen", value: detail.teaNameSurname)
-                            LabeledContent("Tür", value: detail.typeName)
-                            LabeledContent("Başlangıç", value: detail.startDate)
-                            LabeledContent("Bitiş", value: detail.endDate)
-                            if let topic = detail.konuAd, !topic.isEmpty {
-                                LabeledContent("Konu", value: topic)
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(alignment: .top, spacing: 14) {
+                            Image(systemName: "book.closed.fill")
+                                .font(.title2)
+                                .foregroundStyle(.white)
+                                .frame(width: 46, height: 46)
+                                .background(.tint, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(detail.title)
+                                    .font(.title2.weight(.semibold))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Label(detail.lesson, systemImage: "graduationcap")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
                             }
-                            LabeledContent("Durum", value: detail.statusName)
-                            LabeledContent("Etkinlik", value: detail.isActive ? "Aktif" : "Pasif")
-                            LabeledContent("Puan", value: detail.score)
+
+                            Spacer(minLength: 12)
+
+                            Text(detail.statusName)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(statusTint(for: detail.statusName))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    statusTint(for: detail.statusName).opacity(0.15),
+                                    in: Capsule()
+                                )
+                        }
+                        .padding(16)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 190), spacing: 10)],
+                            alignment: .leading,
+                            spacing: 10
+                        ) {
+                            detailItem("Öğretmen", value: detail.teaNameSurname, icon: "person.fill")
+                            detailItem("Başlangıç", value: detail.startDate, icon: "calendar")
+                            detailItem("Bitiş", value: detail.endDate, icon: "calendar.badge.clock")
+                            detailItem("Tür", value: detail.typeName, icon: "tag.fill")
+                            if let topic = detail.konuAd, !topic.isEmpty {
+                                detailItem("Konu", value: topic, icon: "text.book.closed.fill")
+                            }
+                            if !detail.score.isEmpty, detail.score != "-" {
+                                detailItem("Puan", value: detail.score, icon: "star.fill")
+                            }
+                            detailItem(
+                                "Etkinlik",
+                                value: detail.isActive ? "Aktif" : "Pasif",
+                                icon: detail.isActive ? "checkmark.circle.fill" : "minus.circle.fill"
+                            )
                         }
 
                         if !detail.description.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Açıklama").font(.headline)
+                            GroupBox {
                                 Text(detail.description)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 4)
+                            } label: {
+                                Label("Açıklama", systemImage: "text.alignleft")
+                                    .font(.headline)
                             }
                         }
 
                         if !detail.teacherComment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Öğretmen yorumu").font(.headline)
+                            GroupBox {
                                 Text(detail.teacherComment)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 4)
+                            } label: {
+                                Label("Öğretmen yorumu", systemImage: "quote.bubble.fill")
+                                    .font(.headline)
                             }
                         }
 
@@ -745,7 +915,7 @@ private struct HomeworkDetailView: View {
                         filesSection("Cevap dosyaları", files: detail.answerFiles)
                     }
                     .padding(20)
-                    .frame(maxWidth: 760, alignment: .leading)
+                    .frame(maxWidth: 720, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else if model.isLoadingHomeworkDetail {
@@ -758,23 +928,67 @@ private struct HomeworkDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle(homework.title)
         .task(id: homework.id) {
             await model.loadHomeworkDetail(id: homework.id)
         }
     }
 
+    private func detailItem(_ title: String, value: String, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.tint)
+                .frame(width: 26, height: 26)
+                .background(.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value.isEmpty ? "—" : value)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+        .background(.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     private func filesSection(_ title: String, files: [HomeworkFile]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
+        GroupBox {
             if files.isEmpty {
-                Text("Dosya yok").foregroundStyle(.secondary)
+                Label("Dosya bulunmuyor", systemImage: "tray")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
             } else {
-                ForEach(files) { file in
-                    HomeworkFileDownloadRow(file: file, model: model)
+                VStack(spacing: 8) {
+                    ForEach(files) { file in
+                        HomeworkFileDownloadRow(file: file, model: model)
+                    }
                 }
             }
+        } label: {
+            Label(title, systemImage: "paperclip")
+                .font(.headline)
         }
+    }
+
+    private func statusTint(for status: String) -> Color {
+        let normalizedStatus = status
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(with: Locale(identifier: "tr_TR"))
+
+        if normalizedStatus.contains("yapılmadı") { return .red }
+        if normalizedStatus.contains("eksik") { return .yellow }
+        if normalizedStatus.contains("yapıldı")
+            || normalizedStatus.contains("tamamlandı")
+            || normalizedStatus.contains("teslim edildi") {
+            return .green
+        }
+        return .secondary
     }
 }
 
@@ -813,7 +1027,8 @@ private struct HomeworkFileDownloadRow: View {
                     .foregroundStyle(.red)
             }
         }
-        .padding(.vertical, 3)
+        .padding(10)
+        .background(.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     @MainActor
@@ -861,7 +1076,8 @@ struct MainView: View {
                 selection: $selection,
                 profile: model.studentProfile,
                 profileImage: model.studentProfileImage,
-                isLoadingProfile: model.isLoadingStudentProfile
+                isLoadingProfile: model.isLoadingStudentProfile,
+                isScreenshotMode: $model.isScreenshotMode
             ) {
                 selection = .profile
             }
@@ -876,10 +1092,13 @@ struct MainView: View {
             )
             } detail: {
             Group {
-                switch selection {
-                case .home:
+                if selection == .home {
                     HomeDashboardView(model: model, selection: $selection)
-                case .schedule:
+                } else if model.isScreenshotMode {
+                    ScreenshotProtectedSectionView(section: selection)
+                } else {
+                    switch selection {
+                    case .schedule:
                     if let schedule = model.schedule {
                         ScheduleView(schedule: schedule) {
                             Task { await model.refresh() }
@@ -891,31 +1110,34 @@ struct MainView: View {
                             description: Text(model.error ?? "Gösterilecek ders programı bulunamadı.")
                         )
                     }
-                case .practiceExams:
-                    ExamsView(model: model)
-                case .taramalar:
-                    TaramalarView(model: model)
-                case .homework:
-                    HomeworkView(model: model)
-                case .foodList:
-                    FoodListView(model: model)
-                case .messages:
-                    MessagesView(client: model.client)
-                case .attendance:
-                    AttendanceView(client: model.client)
-                case .teachers:
-                    TeachersView(client: model.client)
-                case .announcements:
-                    AnnouncementsView(client: model.client)
-                case .events:
-                    EventsView(client: model.client)
-                case .profile:
-                    ProfileDetailView(
-                        profile: model.studentProfile,
-                        image: model.studentProfileImage
-                    )
-                case nil:
-                    ContentUnavailableView("Bir bölüm seçin", systemImage: "sidebar.left")
+                    case .practiceExams:
+                        ExamsView(model: model)
+                    case .taramalar:
+                        TaramalarView(model: model)
+                    case .homework:
+                        HomeworkView(model: model)
+                    case .foodList:
+                        FoodListView(model: model)
+                    case .messages:
+                        MessagesView(client: model.client)
+                    case .attendance:
+                        AttendanceView(client: model.client)
+                    case .teachers:
+                        TeachersView(client: model.client)
+                    case .announcements:
+                        AnnouncementsView(client: model.client)
+                    case .events:
+                        EventsView(client: model.client)
+                    case .profile:
+                        ProfileDetailView(
+                            profile: model.studentProfile,
+                            image: model.studentProfileImage
+                        )
+                    case .home:
+                        EmptyView()
+                    case nil:
+                        ContentUnavailableView("Bir bölüm seçin", systemImage: "sidebar.left")
+                    }
                 }
             }.toolbar {
                 ToolbarItemGroup(placement: .secondaryAction) {
@@ -936,8 +1158,57 @@ struct MainView: View {
     }
 
     private var sidebarContentWidth: CGFloat {
-        let nameLength = model.studentProfile?.name.count ?? 0
+        let nameLength = model.isScreenshotMode ? 0 : model.studentProfile?.name.count ?? 0
         return min(300, 215 + CGFloat(max(nameLength - 14, 0)) * 5.5)
+    }
+}
+
+private struct ScreenshotProtectedSectionView: View {
+    let section: AppSection?
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(sectionTitle, systemImage: sectionImage)
+        } description: {
+            Text("Ekran görüntüsü modu açıkken kişisel bilgiler gizlenir.")
+        }
+        .navigationTitle(sectionTitle)
+    }
+
+    private var sectionTitle: String {
+        switch section {
+        case .schedule: "Ders Programı"
+        case .practiceExams: "Deneme Sınavları"
+        case .taramalar: "Taramalar"
+        case .homework: "Ödevler"
+        case .foodList: "Yemek Listesi"
+        case .messages: "Mesajlar"
+        case .attendance: "Devamsızlık"
+        case .teachers: "Öğretmenlerim"
+        case .announcements: "Duyurular"
+        case .events: "Etkinlikler"
+        case .profile: "Profil"
+        case .home: "Ana Sayfa"
+        case nil: "Bölüm"
+        }
+    }
+
+    private var sectionImage: String {
+        switch section {
+        case .schedule: "calendar"
+        case .practiceExams: "doc.text"
+        case .taramalar: "checklist"
+        case .homework: "book"
+        case .foodList: "fork.knife"
+        case .messages: "envelope"
+        case .attendance: "calendar.badge.exclamationmark"
+        case .teachers: "person.2"
+        case .announcements: "megaphone"
+        case .events: "calendar.day.timeline.left"
+        case .profile: "person.crop.circle"
+        case .home: "house"
+        case nil: "eye.slash"
+        }
     }
 }
 

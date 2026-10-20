@@ -30,6 +30,7 @@ struct AppSidebarView: View {
     let profile: StudentProfile?
     let profileImage: NSImage?
     let isLoadingProfile: Bool
+    @Binding var isScreenshotMode: Bool
     let selectProfile: () -> Void
 
     var body: some View {
@@ -69,9 +70,10 @@ struct AppSidebarView: View {
             Divider()
 
             SidebarProfileView(
-                name: profile?.name,
-                image: profileImage,
-                isLoading: isLoadingProfile,
+                name: isScreenshotMode ? nil : profile?.name,
+                image: isScreenshotMode ? nil : profileImage,
+                isLoading: isScreenshotMode ? false : isLoadingProfile,
+                isScreenshotMode: $isScreenshotMode,
                 action: selectProfile
             )
         }
@@ -82,46 +84,66 @@ private struct SidebarProfileView: View {
     let name: String?
     let image: NSImage?
     let isLoading: Bool
+    @Binding var isScreenshotMode: Bool
     let action: () -> Void
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                ProfileAvatarView(name: name, image: image, size: 30)
+        HStack(spacing: 2) {
+            Button(action: action) {
+                HStack(spacing: 9) {
+                    ProfileAvatarView(name: name, image: image, size: 30)
 
-                Text(displayName)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    Text(displayName)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
+                .contentShape(Rectangle())
+                .padding(.leading, 10)
+                .padding(.vertical, 8)
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(
-                isHovering ? Color.primary.opacity(0.08) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 7)
-            )
+            .buttonStyle(.plain)
+            .accessibilityLabel(displayName)
+            .accessibilityHint("Profil bilgilerini gösterir")
+
+            Menu {
+                Toggle(isOn: $isScreenshotMode) {
+                    Label("Ekran Görüntüsü Modu", systemImage: "eye.slash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Profil menüsü")
+            .accessibilityLabel("Profil menüsü")
         }
-        .buttonStyle(.plain)
+        .background(
+            isHovering ? Color.primary.opacity(0.08) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 7)
+        )
         .padding(6)
         .onHover { hovering in
             isHovering = hovering
         }
-        .accessibilityLabel(displayName)
-        .accessibilityHint("Profil bilgilerini gösterir")
     }
 
     private var displayName: String {
+        if isScreenshotMode {
+            return "Öğrenci"
+        }
         guard let name, !name.isEmpty else {
-            return "Cem Yılmaz"
+            return "Öğrenci"
         }
         return name.capitalized(with: Locale(identifier: "tr_TR"))
     }

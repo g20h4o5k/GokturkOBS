@@ -138,3 +138,116 @@ struct SessionRecoveryPolicyTests {
         }
     }
 }
+
+struct FoodMealSearchStrategyTests {
+    @Test
+    func expandsAbbreviationsAndBuildsGenericFallbacks() {
+        let zeytinyagli = FoodMealSearchStrategy.candidates(for: "ZY BEZELYE")
+        let stuffedRice = FoodMealSearchStrategy.candidates(for: "İÇLİ PİRİNÇ PİLAVI")
+        let starSoup = FoodMealSearchStrategy.candidates(for: "YILDIZ ÇORBA")
+        let noodlePasta = FoodMealSearchStrategy.candidates(for: "ERİŞTE MAKARNA")
+
+        #expect(zeytinyagli.first == "zeytinyağlı BEZELYE")
+        #expect(stuffedRice.contains("PİRİNÇ PİLAVI"))
+        #expect(starSoup == ["YILDIZ ÇORBA", "YILDIZ"])
+        #expect(noodlePasta == ["ERİŞTE MAKARNA", "ERİŞTE"])
+    }
+
+    @Test
+    func removesServingPhraseWithoutRemovingTheDish() {
+        let candidates = FoodMealSearchStrategy.candidates(for: "EKMEK ARASI ET DÖNER")
+
+        #expect(candidates.first == "ET DÖNER sandviç")
+        #expect(candidates.contains("ET DÖNER"))
+        #expect(FoodMealSearchStrategy.candidates(for: "EKMEK ARASI TAVUK").first == "TAVUK sandviç")
+    }
+
+    @Test
+    func buildsDirectRecipeSlugsWithTurkishCharacters() {
+        #expect(FoodMealSearchStrategy.recipeSlug(for: "TAVUK ROTİ") == "tavuk-roti")
+        #expect(FoodMealSearchStrategy.recipeSlug(for: "İÇLİ PİRİNÇ PİLAVI") == "icli-pirinc-pilav")
+    }
+
+    @Test
+    func searchesWithCategoryContextBeforeThePlainCandidate() {
+        #expect(FoodMealSearchStrategy.contextualQueries(
+            for: "ERİŞTE",
+            originalMealName: "ERİŞTE MAKARNA"
+        ) == ["ERİŞTE makarna"])
+        #expect(FoodMealSearchStrategy.contextualQueries(
+            for: "TAVUK ROTİ",
+            originalMealName: "TAVUK ROTİ"
+        ) == ["TAVUK ROTİ"])
+    }
+
+    @Test
+    func matchesTurkishInflectionsAndMinorSpellingDifferences() {
+        let cauliflower = FoodMealSearchStrategy.matchScore(
+            expected: "KARNABAHAR KIZARTMA",
+            actual: "Çıtırlığının Sırları Var: Karnabahar Kızartması"
+        )
+        let potato = FoodMealSearchStrategy.matchScore(
+            expected: "ELMA DİLİMİ PATATES",
+            actual: "Elma Dilim Patates"
+        )
+        let cabbage = FoodMealSearchStrategy.matchScore(
+            expected: "ZEYTİNYAĞLI KABUSKA",
+            actual: "Zeytinyağlı Kapuska"
+        )
+
+        #expect(cauliflower >= 0.82)
+        #expect(potato >= 0.82)
+        #expect(cabbage >= 0.82)
+    }
+
+    @Test
+    func rejectsRecipesWithANameOrDishTypeMismatch() {
+        #expect(!FoodMealSearchStrategy.isValidMatch(
+            candidate: "MEVLANA BÖREĞİ",
+            originalMealName: "MEVLANA BÖREĞİ",
+            actual: "Mevlana Şerbeti"
+        ))
+        #expect(!FoodMealSearchStrategy.isValidMatch(
+            candidate: "MEVLANA BÖREĞİ",
+            originalMealName: "MEVLANA BÖREĞİ",
+            actual: "Biber Böreği"
+        ))
+        #expect(!FoodMealSearchStrategy.isValidMatch(
+            candidate: "TAVUK ROTİ",
+            originalMealName: "TAVUK ROTİ",
+            actual: "Tavuk Sote"
+        ))
+        #expect(!FoodMealSearchStrategy.isValidMatch(
+            candidate: "SOSLU TAVUK",
+            originalMealName: "SOSLU TAVUK PANE",
+            actual: "Köri Soslu Tavuk"
+        ))
+        #expect(!FoodMealSearchStrategy.isValidMatch(
+            candidate: "ERİŞTE MAKARNA",
+            originalMealName: "ERİŞTE MAKARNA",
+            actual: "Makarna Pasta"
+        ))
+        #expect(FoodMealSearchStrategy.isValidMatch(
+            candidate: "ERİŞTE",
+            originalMealName: "ERİŞTE MAKARNA",
+            actual: "Erişte Tarifi"
+        ))
+        #expect(FoodMealSearchStrategy.isValidMatch(
+            candidate: "YILDIZ",
+            originalMealName: "YILDIZ ÇORBA",
+            actual: "Yıldız Şehriye Çorbası"
+        ))
+    }
+
+    @Test
+    func producesSafeStockCategoriesForUnknownMealNames() {
+        #expect(FoodMealSearchStrategy.fallbackCategories(for: "MEVLANA BÖREĞİ") == ["börek"])
+        #expect(FoodMealSearchStrategy.fallbackCategories(for: "SARAY USULÜ TAVUK") == ["tavuk"])
+        #expect(FoodMealSearchStrategy.fallbackCategories(for: "ETLİ BİLİNMEYEN YEMEK") == ["et"])
+        #expect(FoodMealSearchStrategy.fallbackCategories(for: "TAVUKLU MAKARNA") == ["makarna", "tavuk"])
+        #expect(FoodMealSearchStrategy.fallbackCategories(for: "MEVSİM TÜRLÜSÜ") == ["türlü"])
+        #expect(FoodMealSearchStrategy.fallbackCategories(for: "EKMEK ARASI HAMBURGER KÖFTE").first == "hamburger")
+        #expect(!FoodMealSearchStrategy.fallbackCategories(for: "TATLI KABAK YAHNİ").contains("tatlı"))
+        #expect(FoodMealSearchStrategy.fallbackQueries(for: "et") == ["et", "et yemeği"])
+    }
+}

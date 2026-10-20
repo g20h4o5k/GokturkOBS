@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import PDFKit
 
 struct FoodListResponse: Decodable {
@@ -21,6 +22,297 @@ enum FoodListResult {
 private struct FoodPhoto: Sendable {
     let thumbnailURL: URL
     let sourcePageURL: URL?
+}
+
+enum FoodMealSearchStrategy {
+    nonisolated private static let locale = Locale(identifier: "tr_TR")
+    nonisolated private static let genericWords: Set<String> = [
+        "corba", "pilav", "kizartma", "yemek", "etli", "soslu",
+        "tereyagli", "zeytinyagli", "yahni", "firinda", "sebzeli",
+        "kasarli", "usul", "arasi", "ekmek", "mevsim"
+    ]
+    nonisolated private static let dishTypeWords: Set<String> = [
+        "corba", "pilav", "borek", "kofte", "yahni", "kizartma",
+        "makarna", "salata", "tatli", "pide", "pizza", "kebap", "kebabi"
+    ]
+    nonisolated private static let dishTypeAliases: [String: Set<String>] = [
+        "makarna": ["eriste", "spagetti"]
+    ]
+
+    nonisolated static func candidates(for mealName: String, limit: Int = 12) -> [String] {
+        let expanded = searchableName(mealName)
+        let words = expanded.split(whereSeparator: \Character.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return [] }
+
+        var result: [String] = []
+        func append(_ words: [String]) {
+            let candidate = words.joined(separator: " ")
+            guard !candidate.isEmpty,
+                  !result.contains(where: { normalized($0) == normalized(candidate) }) else { return }
+            result.append(candidate)
+        }
+
+        if containsServingPhrase(mealName) {
+            append(words + ["sandviç"])
+        }
+        append(words)
+        if words.count > 2 {
+            for keptCount in stride(from: words.count - 1, through: 2, by: -1) {
+                for indices in combinations(of: Array(words.indices), taking: keptCount) {
+                    append(indices.map { words[$0] })
+                    if result.count >= limit { return result }
+                }
+            }
+        }
+        if words.count == 2 {
+            let meaningfulWords = words.filter { word in
+                let normalizedWord = stem(normalized(word))
+                return !genericWords.contains(normalizedWord)
+                    && !dishTypeWords.contains(normalizedWord)
+            }
+            if meaningfulWords.count == 1 {
+                append(meaningfulWords)
+            }
+        }
+        return Array(result.prefix(limit))
+    }
+
+    nonisolated static func matchScore(expected: String, actual: String) -> Double {
+        let expectedWords = tokenSet(searchableName(expected))
+        let actualWords = tokenSet(actual)
+        guard !expectedWords.isEmpty, !actualWords.isEmpty else { return 0 }
+
+        let distinctive = expectedWords.filter { word in
+            !genericWords.contains(word)
+                && !genericWords.contains(where: { generic in
+                    word.count > generic.count && word.contains(generic)
+                })
+        }
+        let focus = distinctive.isEmpty ? expectedWords : distinctive
+        let focusMatches = matchedCount(from: focus, in: actualWords)
+        let allMatches = matchedCount(from: expectedWords, in: actualWords)
+        let actualMatches = matchedCount(from: actualWords, in: expectedWords)
+        let focusRecall = Double(focusMatches) / Double(focus.count)
+        let allRecall = Double(allMatches) / Double(expectedWords.count)
+        let precision = Double(actualMatches) / Double(actualWords.count)
+        return focusRecall * 0.6 + allRecall * 0.35 + precision * 0.05
+    }
+
+    nonisolated static func isValidMatch(
+        candidate: String,
+        originalMealName: String,
+        actual: String
+    ) -> Bool {
+        let candidateWords = wordList(candidate)
+        let originalWords = wordList(searchableName(originalMealName))
+        let actualWords = Set(wordList(actual))
+        guard !candidateWords.isEmpty, !actualWords.isEmpty else { return false }
+
+        let candidateIsCovered = candidateWords.allSatisfy { expectedWord in
+            actualWords.contains { wordsMatch(expectedWord, $0) }
+        }
+        guard candidateIsCovered else { return false }
+
+        let requiredDistinctiveWords = originalWords.filter { word in
+            !genericWords.contains(word) && !dishTypeWords.contains(word)
+        }
+        guard requiredDistinctiveWords.allSatisfy({ expectedWord in
+            actualWords.contains { wordsMatch(expectedWord, $0) }
+        }) else { return false }
+
+        let requiredTypes = originalWords.filter(dishTypeWords.contains)
+        return requiredTypes.allSatisfy { expectedType in
+            actualWords.contains { wordsMatch(expectedType, $0) }
+                || dishTypeAliases[expectedType, default: []].contains { alias in
+                    candidateWords.contains { wordsMatch(alias, $0) }
+                        && actualWords.contains { wordsMatch(alias, $0) }
+                }
+        }
+    }
+
+    nonisolated static func fallbackCategories(for mealName: String) -> [String] {
+        let words = wordList(mealName)
+        let categoryNames: [String: String] = [
+            "corba": "çorba", "pilav": "pilav", "borek": "börek",
+            "kofte": "köfte", "yahni": "yahni", "kizartma": "kızartma",
+            "makarna": "makarna", "salata": "salata", "pide": "pide",
+            "pizza": "pizza", "hamburger": "hamburger", "kebap": "kebap", "turlu": "türlü"
+        ]
+
+        var categories = words.compactMap { categoryNames[$0] }
+        if words.contains(where: { $0 == "tavuk" || $0.hasPrefix("tavuk") }) {
+            categories.append("tavuk")
+        }
+        if words.contains(where: { $0 == "et" || $0.hasPrefix("etli") }) {
+            categories.append("et")
+        }
+        return categories.reduce(into: [String]()) { result, category in
+            if !result.contains(category) { result.append(category) }
+        }
+    }
+
+    nonisolated static func fallbackQueries(for category: String) -> [String] {
+        [category, "\(category) yemeği"]
+    }
+
+    nonisolated static func contextualQueries(
+        for candidate: String,
+        originalMealName: String
+    ) -> [String] {
+        let candidateWords = Set(wordList(candidate))
+        let categories = fallbackCategories(for: originalMealName)
+        guard !categories.isEmpty else { return [candidate] }
+
+        var queries: [String] = []
+        for category in categories {
+            let categoryWords = wordList(category)
+            let alreadyContainsCategory = categoryWords.allSatisfy(candidateWords.contains)
+            let query = alreadyContainsCategory ? candidate : "\(candidate) \(category)"
+            if !queries.contains(where: { normalized($0) == normalized(query) }) {
+                queries.append(query)
+            }
+        }
+        return queries
+    }
+
+    nonisolated static func recipeSlug(for mealName: String) -> String {
+        wordList(mealName).joined(separator: "-")
+    }
+
+    nonisolated private static func containsServingPhrase(_ mealName: String) -> Bool {
+        let words = mealName.split(whereSeparator: \Character.isWhitespace).map { normalized(String($0)) }
+        guard words.count > 1 else { return false }
+
+        return words.indices.dropLast().contains { index in
+            words[index] == "ekmek" && words[index + 1] == "arasi"
+        }
+    }
+
+    nonisolated private static func searchableName(_ mealName: String) -> String {
+        var value = mealName
+        let abbreviations = [
+            (#"(?i)(?<![\p{L}])T\s*\.?\s*Y\s*\.?(?![\p{L}])"#, "tereyağlı"),
+            (#"(?i)(?<![\p{L}])Z\s*\.?\s*Y\s*\.?(?![\p{L}])"#, "zeytinyağlı")
+        ]
+        for (pattern, replacement) in abbreviations {
+            value = value.replacingOccurrences(
+                of: pattern,
+                with: replacement,
+                options: .regularExpression
+            )
+        }
+        let words = value.split(whereSeparator: \Character.isWhitespace).map(String.init)
+        var retainedWords: [String] = []
+        var index = 0
+        while index < words.count {
+            if index + 1 < words.count,
+               normalized(words[index]) == "ekmek",
+               normalized(words[index + 1]) == "arasi" {
+                index += 2
+            } else {
+                retainedWords.append(words[index])
+                index += 1
+            }
+        }
+        value = retainedWords.joined(separator: " ")
+        return value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated private static func combinations(of values: [Int], taking count: Int) -> [[Int]] {
+        guard count > 0, count <= values.count else { return [] }
+        if count == 1 { return values.map { [$0] } }
+        if count == values.count { return [values] }
+        guard let first = values.first else { return [] }
+        let tail = Array(values.dropFirst())
+        return combinations(of: tail, taking: count - 1).map { [first] + $0 }
+            + combinations(of: tail, taking: count)
+    }
+
+    nonisolated private static func tokenSet(_ value: String) -> Set<String> {
+        let words = wordList(value)
+        var tokens = Set(words)
+        if words.count > 1 {
+            for index in 0..<(words.count - 1) {
+                tokens.insert(words[index] + words[index + 1])
+            }
+        }
+        return tokens
+    }
+
+    nonisolated private static func wordList(_ value: String) -> [String] {
+        normalized(value)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .map(stem)
+    }
+
+    nonisolated private static func stem(_ word: String) -> String {
+        let replacements: [String: String] = [
+            "corbasi": "corba", "pilavi": "pilav", "koftesi": "kofte",
+            "kizartmasi": "kizartma", "yahnisi": "yahni", "yemegi": "yemek",
+            "boregi": "borek", "dilimi": "dilim", "usulu": "usul",
+            "kebabi": "kebap"
+        ]
+        if let replacement = replacements[word] { return replacement }
+        if word.count >= 6, let last = word.last, "iu".contains(last) {
+            return String(word.dropLast())
+        }
+        return word
+    }
+
+    nonisolated private static func matchedCount(from source: Set<String>, in target: Set<String>) -> Int {
+        source.filter { word in target.contains(where: { wordsMatch(word, $0) }) }.count
+    }
+
+    nonisolated private static func wordsMatch(_ first: String, _ second: String) -> Bool {
+        if first == second { return true }
+        if min(first.count, second.count) >= 4,
+           (first.contains(second) || second.contains(first)) {
+            return true
+        }
+        guard min(first.count, second.count) >= 5,
+              abs(first.count - second.count) <= 1 else { return false }
+        return editDistanceAtMostOne(first, second)
+    }
+
+    nonisolated private static func editDistanceAtMostOne(_ first: String, _ second: String) -> Bool {
+        let lhs = Array(first)
+        let rhs = Array(second)
+        var leftIndex = 0
+        var rightIndex = 0
+        var edits = 0
+        while leftIndex < lhs.count, rightIndex < rhs.count {
+            if lhs[leftIndex] == rhs[rightIndex] {
+                leftIndex += 1
+                rightIndex += 1
+            } else {
+                edits += 1
+                if edits > 1 { return false }
+                if lhs.count > rhs.count {
+                    leftIndex += 1
+                } else if rhs.count > lhs.count {
+                    rightIndex += 1
+                } else {
+                    leftIndex += 1
+                    rightIndex += 1
+                }
+            }
+        }
+        if leftIndex < lhs.count || rightIndex < rhs.count { edits += 1 }
+        return edits <= 1
+    }
+
+    nonisolated private static func normalized(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
+            .replacingOccurrences(of: "ı", with: "i")
+            .replacingOccurrences(of: "ş", with: "s")
+            .replacingOccurrences(of: "ğ", with: "g")
+            .replacingOccurrences(of: "ü", with: "u")
+            .replacingOccurrences(of: "ö", with: "o")
+            .replacingOccurrences(of: "ç", with: "c")
+    }
 }
 
 private actor FoodPhotoService {
@@ -76,6 +368,11 @@ private actor FoodPhotoService {
     }
 
     private var cache: [String: CachedResult] = [:]
+    private var searchCache: [String: [Recipe]] = [:]
+    private var directPhotoCache: [String: CachedResult] = [:]
+    private var imageDataCache: [URL: Data] = [:]
+    private var imageDownloadTasks: [URL: Task<Data?, Never>] = [:]
+    private var persistentImageDirectory: URL?
 
     func photo(for mealName: String) async -> FoodPhoto? {
         let cacheKey = mealName.folding(
@@ -99,7 +396,7 @@ private actor FoodPhotoService {
             return nil
         }
 
-        let mealNames = candidateMealNames(for: mealName)
+        let mealNames = FoodMealSearchStrategy.candidates(for: mealName)
         guard !mealNames.isEmpty else {
             cache[cacheKey] = .missing
             return nil
@@ -107,13 +404,21 @@ private actor FoodPhotoService {
 
         for candidateMealName in mealNames {
             var recipesByURL: [URL: Recipe] = [:]
-            for searchQuery in searchQueries(for: candidateMealName) {
+            let contextualQueries = FoodMealSearchStrategy.contextualQueries(
+                for: candidateMealName,
+                originalMealName: mealName
+            )
+            for searchQuery in contextualQueries {
                 if let recipes = try? await searchRecipes(query: searchQuery) {
                     for recipe in recipes {
                         recipesByURL[recipe.permalink] = recipe
                     }
                 }
-                if let best = bestRecipe(for: candidateMealName, among: Array(recipesByURL.values)),
+                if let best = bestRecipe(
+                    for: candidateMealName,
+                    originalMealName: mealName,
+                    among: Array(recipesByURL.values)
+                ),
                    best.score >= 0.82,
                    let photo = photo(from: best.recipe) {
                     cache[cacheKey] = .found(photo)
@@ -121,19 +426,186 @@ private actor FoodPhotoService {
                 }
             }
 
-            if let best = bestRecipe(for: candidateMealName, among: Array(recipesByURL.values)),
-               best.score >= 0.62,
-               let photo = photo(from: best.recipe) {
+            if let photo = await directRecipePhoto(
+                for: candidateMealName,
+                originalMealName: mealName
+            ) {
                 cache[cacheKey] = .found(photo)
                 return photo
             }
+
+            let candidateWasSearched = contextualQueries.contains { query in
+                normalized(query) == normalized(candidateMealName)
+            }
+            if !candidateWasSearched,
+               let recipes = try? await searchRecipes(query: candidateMealName) {
+                for recipe in recipes {
+                    recipesByURL[recipe.permalink] = recipe
+                }
+                if let best = bestRecipe(
+                    for: candidateMealName,
+                    originalMealName: mealName,
+                    among: Array(recipesByURL.values)
+                ),
+                   best.score >= 0.82,
+                   let photo = photo(from: best.recipe) {
+                    cache[cacheKey] = .found(photo)
+                    return photo
+                }
+            }
+        }
+
+        for category in FoodMealSearchStrategy.fallbackCategories(for: mealName) {
+            if let photo = stockPhoto(for: category) {
+                cache[cacheKey] = .found(photo)
+                return photo
+            }
+
+            var recipesByURL: [URL: Recipe] = [:]
+            for query in FoodMealSearchStrategy.fallbackQueries(for: category) {
+                guard let recipes = try? await searchRecipes(query: query) else { continue }
+                for recipe in recipes {
+                    recipesByURL[recipe.permalink] = recipe
+                }
+            }
+            guard let best = bestRecipe(
+                    for: category,
+                    originalMealName: category,
+                    among: Array(recipesByURL.values)
+                  ),
+                  best.score >= 0.82,
+                  let photo = photo(from: best.recipe) else { continue }
+            cache[cacheKey] = .found(photo)
+            return photo
         }
 
         cache[cacheKey] = .missing
         return nil
     }
 
+    func imageData(for url: URL, persistToApplicationSupport: Bool = false) async -> Data? {
+        if let cached = imageDataCache[url] {
+            if persistToApplicationSupport {
+                saveImageData(cached, for: url)
+            }
+            return cached
+        }
+        if let stored = loadImageData(for: url) {
+            imageDataCache[url] = stored
+            return stored
+        }
+        if let activeDownload = imageDownloadTasks[url] {
+            let data = await activeDownload.value
+            if persistToApplicationSupport, let data {
+                saveImageData(data, for: url)
+            }
+            return data
+        }
+
+        let task = Task<Data?, Never> {
+            let request = URLRequest(
+                url: url,
+                cachePolicy: .reloadIgnoringLocalCacheData,
+                timeoutInterval: 20
+            )
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard !Task.isCancelled,
+                      !data.isEmpty,
+                      let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode),
+                      httpResponse.mimeType?.hasPrefix("image/") == true else {
+                    return nil
+                }
+                return data
+            } catch {
+                return nil
+            }
+        }
+        imageDownloadTasks[url] = task
+        let data = await task.value
+        imageDownloadTasks[url] = nil
+        if let data {
+            imageDataCache[url] = data
+            if persistToApplicationSupport {
+                saveImageData(data, for: url)
+            }
+        }
+        return data
+    }
+
+    func prefetch(mealNames: [String], menuDayID: String) async {
+        preparePersistentCache(for: menuDayID)
+        var seen = Set<String>()
+        let uniqueNames = mealNames.filter { mealName in
+            seen.insert(mealName).inserted
+        }
+
+        for mealName in uniqueNames {
+            guard !Task.isCancelled else { return }
+            guard let photo = await photo(for: mealName) else { continue }
+            _ = await imageData(for: photo.thumbnailURL, persistToApplicationSupport: true)
+        }
+    }
+
+    private func preparePersistentCache(for menuDayID: String) {
+        let fileManager = FileManager.default
+        guard let applicationSupport = try? fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else { return }
+
+        let appDirectory = applicationSupport
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "GokturkOBS", isDirectory: true)
+        let cacheRoot = appDirectory.appendingPathComponent("FoodPhotos", isDirectory: true)
+        let dayDirectory = cacheRoot.appendingPathComponent("CurrentMenuDay", isDirectory: true)
+        let markerURL = cacheRoot.appendingPathComponent("menu-day.txt", isDirectory: false)
+
+        do {
+            try fileManager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+            let storedDayID = try? String(contentsOf: markerURL, encoding: .utf8)
+            if storedDayID != menuDayID, fileManager.fileExists(atPath: dayDirectory.path) {
+                try fileManager.removeItem(at: dayDirectory)
+                imageDataCache.removeAll()
+            }
+            try fileManager.createDirectory(at: dayDirectory, withIntermediateDirectories: true)
+            try menuDayID.write(to: markerURL, atomically: true, encoding: .utf8)
+            persistentImageDirectory = dayDirectory
+        } catch {
+            persistentImageDirectory = nil
+        }
+    }
+
+    private func loadImageData(for url: URL) -> Data? {
+        guard let fileURL = persistentFileURL(for: url) else { return nil }
+        return try? Data(contentsOf: fileURL, options: .mappedIfSafe)
+    }
+
+    private func saveImageData(_ data: Data, for url: URL) {
+        guard let fileURL = persistentFileURL(for: url) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+    }
+
+    private func persistentFileURL(for url: URL) -> URL? {
+        guard let persistentImageDirectory else { return nil }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in url.absoluteString.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return persistentImageDirectory.appendingPathComponent(String(hash, radix: 16) + ".image")
+    }
+
     private func searchRecipes(query: String) async throws -> [Recipe] {
+        let cacheKey = query.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "tr_TR")
+        )
+        if let cached = searchCache[cacheKey] {
+            return cached
+        }
         guard var components = URLComponents(string: "https://yemek.com/ara/sonuclar/") else {
             return []
         }
@@ -155,7 +627,74 @@ private actor FoodPhotoService {
               200..<300 ~= http.statusCode else {
             throw URLError(.badServerResponse)
         }
-        return try JSONDecoder().decode(SearchResponse.self, from: data).data.recipes
+        let recipes = try JSONDecoder().decode(SearchResponse.self, from: data).data.recipes
+        searchCache[cacheKey] = recipes
+        return recipes
+    }
+
+    private func directRecipePhoto(
+        for candidateMealName: String,
+        originalMealName: String
+    ) async -> FoodPhoto? {
+        let slug = FoodMealSearchStrategy.recipeSlug(for: candidateMealName)
+        guard !slug.isEmpty else { return nil }
+
+        if let cached = directPhotoCache[slug] {
+            switch cached {
+            case .found(let photo): return photo
+            case .missing: return nil
+            }
+        }
+
+        guard let pageURL = URL(string: "https://yemek.com/tarif/\(slug)/") else {
+            directPhotoCache[slug] = .missing
+            return nil
+        }
+
+        var request = URLRequest(url: pageURL)
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        request.setValue("GokturkOBS/2.0 (macOS food menu)", forHTTPHeaderField: "User-Agent")
+        request.cachePolicy = .returnCacheDataElseLoad
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              200..<300 ~= http.statusCode,
+              let html = String(data: data, encoding: .utf8),
+              let recipeTitle = metaContent(named: "og:title", in: html),
+              FoodMealSearchStrategy.isValidMatch(
+                candidate: candidateMealName,
+                originalMealName: originalMealName,
+                actual: recipeTitle
+              ),
+              let imageAddress = metaContent(named: "og:image", in: html),
+              let imageURL = URL(string: imageAddress) else {
+            directPhotoCache[slug] = .missing
+            return nil
+        }
+
+        let photo = FoodPhoto(thumbnailURL: imageURL, sourcePageURL: pageURL)
+        directPhotoCache[slug] = .found(photo)
+        return photo
+    }
+
+    private func metaContent(named property: String, in html: String) -> String? {
+        let escapedProperty = NSRegularExpression.escapedPattern(for: property)
+        let patterns = [
+            #"<meta[^>]+property=[\"']"# + escapedProperty + #"[\"'][^>]+content=[\"']([^\"']+)[\"'][^>]*>"#,
+            #"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']"# + escapedProperty + #"[\"'][^>]*>"#
+        ]
+
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                continue
+            }
+            let range = NSRange(html.startIndex..<html.endIndex, in: html)
+            guard let match = expression.firstMatch(in: html, range: range),
+                  let contentRange = Range(match.range(at: 1), in: html) else { continue }
+            return String(html[contentRange])
+                .replacingOccurrences(of: "&amp;", with: "&")
+        }
+        return nil
     }
 
     private func stockPhoto(for mealName: String) -> FoodPhoto? {
@@ -177,6 +716,21 @@ private actor FoodPhotoService {
         } else if normalized == "TATLI" {
             imageAddress = "https://images.pexels.com/photos/11745425/pexels-photo-11745425.jpeg?auto=compress&w=320&h=240&fit=crop"
             sourceAddress = "https://www.pexels.com/photo/assorted-desserts-on-a-table-11745425/"
+        } else if normalized == "TAVUK" {
+            imageAddress = "https://images.pexels.com/photos/2338407/pexels-photo-2338407.jpeg?auto=compress&w=320&h=240&fit=crop"
+            sourceAddress = "https://www.pexels.com/photo/cooked-food-on-white-ceramic-plate-2338407/"
+        } else if normalized == "MAKARNA" {
+            imageAddress = "https://images.pexels.com/photos/1279330/pexels-photo-1279330.jpeg?auto=compress&w=320&h=240&fit=crop"
+            sourceAddress = "https://www.pexels.com/photo/pasta-with-tomato-and-basil-1279330/"
+        } else if normalized == "PİZZA" {
+            imageAddress = "https://images.pexels.com/photos/825661/pexels-photo-825661.jpeg?auto=compress&w=320&h=240&fit=crop"
+            sourceAddress = "https://www.pexels.com/photo/pizza-on-brown-wooden-table-825661/"
+        } else if normalized == "BÖREK" {
+            imageAddress = "https://imgrosetta.yemek.com/file/159630/159630-1250x833.jpg"
+            sourceAddress = "https://yemek.com/tarif/klasik-tepsi-boregi/"
+        } else if normalized == "HAMBURGER" {
+            imageAddress = "https://images.pexels.com/photos/1639557/pexels-photo-1639557.jpeg?auto=compress&w=320&h=240&fit=crop"
+            sourceAddress = "https://www.pexels.com/photo/close-up-photo-of-burger-1639557/"
         } else {
             imageAddress = nil
             sourceAddress = nil
@@ -199,79 +753,33 @@ private actor FoodPhotoService {
         return FoodPhoto(thumbnailURL: imageURL, sourcePageURL: recipe.permalink)
     }
 
-    private func searchableMealName(_ mealName: String) -> String {
-        mealName
-            .replacingOccurrences(of: "T.Y", with: "tereyağlı", options: .caseInsensitive)
-            .replacingOccurrences(of: "Z.Y", with: "zeytinyağlı", options: .caseInsensitive)
-            .replacingOccurrences(of: "ekmek arası", with: "", options: [.caseInsensitive, .diacriticInsensitive])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func candidateMealNames(for mealName: String) -> [String] {
-        let expanded = searchableMealName(mealName)
-        guard !expanded.isEmpty else {
-            return []
-        }
-
-        let withoutStuffed = expanded
-            .replacingOccurrences(of: "İÇLİ", with: "", options: .caseInsensitive)
-            .replacingOccurrences(of: "içli", with: "", options: .caseInsensitive)
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-        var candidates = [withoutStuffed]
-        let words = Set(normalizedWords(in: withoutStuffed))
-        if words.contains("pirinc") && words.contains("pilav") {
-            candidates.append("pirinç pilavı")
-        }
-        return candidates.reduce(into: [String]()) { result, candidate in
-            guard !candidate.isEmpty,
-                  !result.contains(where: { normalized($0) == normalized(candidate) }) else {
-                return
-            }
-            result.append(candidate)
-        }
-    }
-
-    private func searchQueries(for mealName: String) -> [String] {
-        let distinctiveWords = normalizedWords(in: mealName)
-            .filter { $0.count >= 4 && !genericMealWords.contains($0) }
-        return ([mealName] + distinctiveWords).reduce(into: [String]()) { result, query in
-            if !result.contains(query) {
-                result.append(query)
-            }
-        }
-    }
-
-    private func bestRecipe(for mealName: String, among recipes: [Recipe]) -> (recipe: Recipe, score: Double)? {
-        let expected = Set(normalizedWords(in: mealName))
-        guard !expected.isEmpty else {
-            return nil
-        }
-        let distinctive = expected.subtracting(genericMealWords)
-        let focus = distinctive.isEmpty ? expected : distinctive
+    private func bestRecipe(
+        for mealName: String,
+        originalMealName: String,
+        among recipes: [Recipe]
+    ) -> (recipe: Recipe, score: Double)? {
+        let candidateWordCount = mealName.split(whereSeparator: \Character.isWhitespace).count
         return recipes.compactMap { recipe -> (recipe: Recipe, score: Double)? in
             let recipeName = recipe.title.split(separator: ":").last.map(String.init) ?? recipe.title
-            let actual = Set(normalizedWords(in: recipeName))
-            guard !actual.isEmpty else { return nil }
-            let focusMatches = focus.intersection(actual).count
-            let allMatches = expected.intersection(actual).count
-            let focusRecall = Double(focusMatches) / Double(focus.count)
-            let allRecall = Double(allMatches) / Double(expected.count)
-            let precision = Double(allMatches) / Double(actual.count)
-            return (recipe, focusRecall * 0.8 + allRecall * 0.15 + precision * 0.05)
+            guard FoodMealSearchStrategy.isValidMatch(
+                candidate: mealName,
+                originalMealName: originalMealName,
+                actual: recipeName
+            ) else { return nil }
+            let originalScore = FoodMealSearchStrategy.matchScore(
+                expected: originalMealName,
+                actual: recipeName
+            )
+            guard candidateWordCount > 1 else {
+                return (recipe, originalScore)
+            }
+            let candidateScore = FoodMealSearchStrategy.matchScore(
+                expected: mealName,
+                actual: recipeName
+            ) * 0.9
+            return (recipe, max(originalScore, candidateScore))
         }
         .max { $0.score < $1.score }
-    }
-
-    private func normalizedWords(in value: String) -> [String] {
-        let suffixes: [String: String] = [
-            "corbasi": "corba", "pilavi": "pilav", "koftesi": "kofte",
-            "kizartmasi": "kizartma", "yahnisi": "yahni", "yemegi": "yemek"
-        ]
-        return normalized(value)
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .map { suffixes[$0] ?? $0 }
     }
 
     private func normalized(_ value: String) -> String {
@@ -289,13 +797,6 @@ private actor FoodPhotoService {
 
     private func isIgnoredMeal(_ mealName: String) -> Bool {
         normalized(mealName) == "tatil"
-    }
-
-    private var genericMealWords: Set<String> {
-        [
-            "corba", "pilav", "kizartma", "yemek", "etli", "soslu",
-            "tereyagli", "zeytinyagli", "yahni"
-        ]
     }
 
 }
@@ -742,6 +1243,7 @@ struct FoodPhotoView: View {
     let mealName: String
     let linksToSource: Bool
     @State private var photo: FoodPhoto?
+    @State private var imageData: Data?
     @State private var finishedSearching = false
 
     init(mealName: String, linksToSource: Bool = true) {
@@ -754,22 +1256,13 @@ struct FoodPhotoView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(.quaternary)
 
-            if let photo {
-                AsyncImage(url: photo.thumbnailURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .empty:
-                        ProgressView()
-                            .controlSize(.small)
-                    case .failure:
-                        fallbackIcon
-                    @unknown default:
-                        fallbackIcon
-                    }
-                }
+            if let imageData, let image = NSImage(data: imageData) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if photo != nil, !finishedSearching {
+                ProgressView()
+                    .controlSize(.small)
             } else if finishedSearching {
                 fallbackIcon
             } else {
@@ -793,7 +1286,14 @@ struct FoodPhotoView: View {
         }
         .task(id: mealName) {
             finishedSearching = false
-            photo = await FoodPhotoService.shared.photo(for: mealName)
+            imageData = nil
+            let resolvedPhoto = await FoodPhotoService.shared.photo(for: mealName)
+            guard !Task.isCancelled else { return }
+            photo = resolvedPhoto
+            if let resolvedPhoto {
+                imageData = await FoodPhotoService.shared.imageData(for: resolvedPhoto.thumbnailURL)
+            }
+            guard !Task.isCancelled else { return }
             finishedSearching = true
         }
     }
@@ -804,6 +1304,10 @@ struct FoodPhotoView: View {
             .foregroundStyle(.secondary)
             .accessibilityHidden(true)
     }
+}
+
+func prefetchFoodPhotos(for mealNames: [String], menuDayID: String) async {
+    await FoodPhotoService.shared.prefetch(mealNames: mealNames, menuDayID: menuDayID)
 }
 
 private extension FoodListLoadState {

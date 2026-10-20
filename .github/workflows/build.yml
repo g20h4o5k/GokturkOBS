@@ -3,6 +3,14 @@ name: Build and Release GokturkOBS (unsigned)
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.mdx'
+      - '**/*.txt'
+      - '**/*.pdf'
+      - '**/.DS_Store'
+      - 'LICENSE*'
+      - 'docs/**'
     tags:
       - 'v*'
   pull_request:

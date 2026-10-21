@@ -40,4 +40,4 @@ GPL-3.0
 
 
 
-canım githubun macos-26 konteryner ı bi türlü veremiyor
+canım githubum macos-26 konteryner ı bi türlü veremiyor

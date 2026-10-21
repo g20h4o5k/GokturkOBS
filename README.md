@@ -23,7 +23,7 @@ GöktürkOBS'nin amacı Akbim OBS'nin web arayüzü yerine daha hızlı, sade ve
 ## Gereksinimler
 
 - macOS 26 veya üzeri
-- Apple Silicon
+- Apple Silicon (Intelde çalışır ama test etmedim ve etmeyecem)
 - Swift 6+
 
 ## Uyarı
